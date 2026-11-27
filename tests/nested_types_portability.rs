@@ -578,8 +578,7 @@ fn binary_sorter_has_no_comparable_providers() {
         .err()
         .expect("BinarySorter does not implement getComparableProviders");
     assert!(
-        matches!(error, rucene::error::LuceneError { kind: rucene::error::LuceneErrorKind::UnsupportedOperation { ref message, .. }, .. }
-            if message == "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
+        matches!(&error.kind, rucene::error::LuceneErrorKind::UnsupportedOperation { ref message, .. } if message == "org.apache.lucene.index.IndexSorter$BinarySorter does not implement \
                            getComparableProviders"),
         "{error:?}"
     );

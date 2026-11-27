@@ -56,12 +56,8 @@ fn term(text: &str) -> Term {
 fn expect_assertion_error(runnable: impl FnOnce() -> Result<()>) {
     LuceneTestCase::expect_throws(ASSERTION_ERROR, || {
         runnable().map_err(|e| {
-            if let LuceneError {
-                kind: LuceneErrorKind::AssertionError(message),
-                ..
-            } = e
-            {
-                Throwable::new(ASSERTION_ERROR, message)
+            if let LuceneErrorKind::AssertionError(message) = &e.kind {
+                Throwable::new(ASSERTION_ERROR, message.clone())
             } else {
                 rucene_test_framework::util::java_exceptions::java_throwable(&e)
             }

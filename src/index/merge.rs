@@ -1183,12 +1183,7 @@ mod tests {
 
         merge.set_aborted();
         match state.check_aborted() {
-            Err(
-                error @ LuceneError {
-                    kind: LuceneErrorKind::MergeAborted(_),
-                    ..
-                },
-            ) => {
+            Err(error) if matches!(error.kind, LuceneErrorKind::MergeAborted(_)) => {
                 // `MergeAbortedException.getMessage()`, with nothing added.
                 let message = error.to_string();
                 assert_eq!(message, format!("merge is aborted: {}", merge.seg_string()));

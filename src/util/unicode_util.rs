@@ -117,8 +117,30 @@ impl UnicodeUtil {
         let mut upto = 0usize;
         let mut i = offset;
         let end = offset + length;
+        // Units before this index are converted one at a time: a 16-unit block
+        // that held a non-ASCII unit is not tested again unit by unit.
+        let mut scalar_until = offset;
 
         while i < end {
+            // PERF: a block of 16 ASCII units (`< 0x80`) converts to the same
+            // 16 bytes, one per unit, as Java's per-unit loop
+            // (`UnicodeUtil.java:133-177`) writes; it is tested and narrowed
+            // in one vectorisable step. Any other block, or one `out` cannot
+            // hold, goes through the per-unit loop below, as before.
+            if i >= scalar_until && end - i >= 16 {
+                let block = &source[i..i + 16];
+                if block.iter().fold(0u16, |m, &u| m | u) < 0x80 {
+                    if let Some(dst) = out.get_mut(upto..upto + 16) {
+                        for (byte, &unit) in dst.iter_mut().zip(block) {
+                            *byte = unit as u8;
+                        }
+                        i += 16;
+                        upto += 16;
+                        continue;
+                    }
+                }
+                scalar_until = i + 16;
+            }
             let code = source[i] as i32;
             i += 1;
 
@@ -535,5 +557,90 @@ impl UnicodeUtil {
         utf16_length
             .checked_mul(MAX_UTF8_BYTES_PER_CHAR)
             .expect("INVARIANT: maxUTF8Length overflows, as Math.multiplyExact would")
+    }
+}
+
+#[cfg(test)]
+mod ascii_block_tests {
+    use super::*;
+
+    /// The previous per-unit loop, Java's `UTF16toUTF8(char[], int, int,
+    /// byte[])` line for line: the reference for the ASCII-block form.
+    fn reference(source: &[u16], offset: usize, length: usize, out: &mut [u8]) -> usize {
+        let mut upto = 0usize;
+        let mut i = offset;
+        let end = offset + length;
+        while i < end {
+            let code = source[i] as i32;
+            i += 1;
+            if code < 0x80 {
+                out[upto] = code as u8;
+                upto += 1;
+            } else if code < 0x800 {
+                out[upto] = (0xC0 | (code >> 6)) as u8;
+                out[upto + 1] = (0x80 | (code & 0x3F)) as u8;
+                upto += 2;
+            } else if !(0xD800..=0xDFFF).contains(&code) {
+                out[upto] = (0xE0 | (code >> 12)) as u8;
+                out[upto + 1] = (0x80 | ((code >> 6) & 0x3F)) as u8;
+                out[upto + 2] = (0x80 | (code & 0x3F)) as u8;
+                upto += 3;
+            } else {
+                if code < 0xDC00 && i < end {
+                    let mut utf32 = source[i] as i32;
+                    if (0xDC00..=0xDFFF).contains(&utf32) {
+                        utf32 = (code << 10) + utf32 + SURROGATE_OFFSET;
+                        i += 1;
+                        out[upto] = (0xF0 | (utf32 >> 18)) as u8;
+                        out[upto + 1] = (0x80 | ((utf32 >> 12) & 0x3F)) as u8;
+                        out[upto + 2] = (0x80 | ((utf32 >> 6) & 0x3F)) as u8;
+                        out[upto + 3] = (0x80 | (utf32 & 0x3F)) as u8;
+                        upto += 4;
+                        continue;
+                    }
+                }
+                out[upto] = 0xEF;
+                out[upto + 1] = 0xBF;
+                out[upto + 2] = 0xBD;
+                upto += 3;
+            }
+        }
+        upto
+    }
+
+    /// The ASCII-block form writes the reference bytes for ASCII runs of every
+    /// length, mixed with 2-, 3- and 4-byte characters and unpaired surrogates
+    /// placed across the 16-unit block boundaries, at several offsets.
+    #[test]
+    fn ascii_blocks_match_the_per_unit_loop() {
+        let mut seed = 0x853C_49E6_748F_EA9Bu64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let specials: [u16; 7] = [0x00E9, 0x07FF, 0x20AC, 0xD83D, 0xDE00, 0xDC00, 0xD800];
+        for _ in 0..2000 {
+            let len = (next() % 90) as usize;
+            let source: Vec<u16> = (0..len)
+                .map(|_| {
+                    if next() % 11 == 0 {
+                        specials[(next() % specials.len() as u64) as usize]
+                    } else {
+                        (0x20 + next() % 0x5F) as u16
+                    }
+                })
+                .collect();
+            for offset in [0usize, 1, 5].into_iter().filter(|&o| o <= len) {
+                let length = len - offset;
+                let mut expected = vec![0u8; length * 3 + 1];
+                let mut actual = vec![0u8; length * 3 + 1];
+                let n_expected = reference(&source, offset, length, &mut expected);
+                let n_actual = UnicodeUtil::utf16_to_utf8(&source, offset, length, &mut actual);
+                assert_eq!(n_actual, n_expected);
+                assert_eq!(&actual[..n_actual], &expected[..n_expected]);
+            }
+        }
     }
 }

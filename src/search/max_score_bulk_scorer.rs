@@ -439,21 +439,36 @@ impl MaxScoreBulkScorer {
                 if self.doc_and_score_buffer.size == 0 {
                     break;
                 }
-                for index in 0..self.doc_and_score_buffer.size {
-                    let doc = self.doc_and_score_buffer.docs[index];
-                    if gate_on_filter_matches {
-                        let filter_matches = self
-                            .filter_matches
-                            .as_ref()
-                            .expect("INVARIANT: gating implies a filter bit set");
-                        if !filter_matches.get((doc - inner_window_min) as usize) {
-                            continue;
+                // PERF: the filter test is decided once per batch, not per
+                // doc, and the batch is read through zipped slices.
+                let Self {
+                    doc_and_score_buffer,
+                    window_matches,
+                    window_scores,
+                    filter_matches,
+                    ..
+                } = self;
+                let size = doc_and_score_buffer.size;
+                let batch = doc_and_score_buffer.docs[..size]
+                    .iter()
+                    .zip(&doc_and_score_buffer.features[..size]);
+                if gate_on_filter_matches {
+                    let filter_matches = filter_matches
+                        .as_ref()
+                        .expect("INVARIANT: gating implies a filter bit set");
+                    for (&doc, &score) in batch {
+                        let i = (doc - inner_window_min) as usize;
+                        if filter_matches.get(i) {
+                            window_matches.set(i);
+                            window_scores[i] += f64::from(score);
                         }
                     }
-                    let score = self.doc_and_score_buffer.features[index];
-                    let i = (doc - inner_window_min) as usize;
-                    self.window_matches.set(i);
-                    self.window_scores[i] += f64::from(score);
+                } else {
+                    for (&doc, &score) in batch {
+                        let i = (doc - inner_window_min) as usize;
+                        window_matches.set(i);
+                        window_scores[i] += f64::from(score);
+                    }
                 }
             }
 

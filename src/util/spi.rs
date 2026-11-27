@@ -629,13 +629,14 @@ mod tests {
             ],
         );
         match loader.reload(&bad) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "Illegal service name: 'Bad-Name' must be simple ascii alphanumeric."
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    message,
+                    "Illegal service name: 'Bad-Name' must be simple ascii alphanumeric."
+                )
+            }
             other => panic!("expected the service-name error, got {other:?}"),
         }
         assert_eq!(
@@ -670,10 +671,9 @@ mod tests {
         );
         let clazz = ServiceClass::new(SVC, Arc::clone(&wrong));
         match NamedSPILoader::<Named>::new(&clazz, None) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "org.example.Svc: org.example.Wrong not a subtype")
             }
             other => panic!("expected the not-a-subtype error, got {other:?}"),
@@ -692,12 +692,11 @@ mod tests {
     /// The scan's refusal of [`wrong_loader`]'s class.
     fn assert_not_a_subtype(service: &str, result: Result<()>) {
         match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(
-                    message,
+                    *message,
                     format!("{service}: org.example.Wrong not a subtype")
                 )
             }
@@ -851,10 +850,9 @@ mod tests {
             ],
         );
         match NamedSPILoader::<Named>::new(&ServiceClass::new(SVC, missing), None) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(
                     message,
                     "org.example.Svc: Provider org.example.Missing not found"
@@ -875,20 +873,18 @@ mod tests {
             ],
         );
         match NamedSPILoader::<Named>::new(&ServiceClass::new(SVC, no_constructor), None) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(
                     message,
                     "org.example.Svc: org.example.NoCtor Unable to get public no-arg constructor"
                 );
                 assert!(
-                    matches!(&*cause, LuceneError { kind: LuceneErrorKind::NoSuchMethod(m), .. } if m == "org.example.NoCtor.<init>()"),
+                    matches!(&cause.kind, LuceneErrorKind::NoSuchMethod(m) if m == "org.example.NoCtor.<init>()"),
                     "{cause:?}"
                 );
                 // `NoSuchMethodException` is the cause's class (oracle

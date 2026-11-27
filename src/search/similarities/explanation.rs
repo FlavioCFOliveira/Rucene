@@ -13,6 +13,7 @@
 
 #![deny(unsafe_code)]
 
+use std::borrow::Cow;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 
@@ -167,7 +168,10 @@ impl fmt::Display for ExplanationValue {
 pub struct Explanation {
     is_match: bool,
     value: ExplanationValue,
-    description: String,
+    /// PERF: Java's descriptions are mostly string literals, which cost no
+    /// allocation; a literal is held here without a copy (see
+    /// [`matched_static`](Self::matched_static)), any other string owned.
+    description: Cow<'static, str>,
     details: Vec<Explanation>,
 }
 
@@ -190,7 +194,23 @@ impl Explanation {
         Self {
             is_match: true,
             value: value.into(),
-            description: description.into(),
+            description: Cow::Owned(description.into()),
+            details,
+        }
+    }
+
+    /// [`matched`](Self::matched) with a string-literal description, held
+    /// without a copy, as Java's `Explanation.match(value, "literal", ...)`
+    /// holds the interned literal.
+    pub(crate) fn matched_static(
+        value: impl Into<ExplanationValue>,
+        description: &'static str,
+        details: Vec<Explanation>,
+    ) -> Self {
+        Self {
+            is_match: true,
+            value: value.into(),
+            description: Cow::Borrowed(description),
             details,
         }
     }
@@ -204,7 +224,7 @@ impl Explanation {
         Self {
             is_match: false,
             value: ExplanationValue::Float(0.0),
-            description: description.into(),
+            description: Cow::Owned(description.into()),
             details,
         }
     }

@@ -329,30 +329,17 @@ pub(crate) fn bool_str(b: bool) -> &'static str {
 /// The message of a Java exception the port reports as `e`: the text a
 /// variant carries, without the port's `Display` prefix.
 pub(crate) fn java_message(e: &LuceneError) -> String {
-    match e {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-            ..
-        }
-        | LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message: m, .. },
-            ..
-        } => m.clone(),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind: LuceneErrorKind::UnsupportedOperation { message: m, .. },
-            ..
-        } => m.clone(),
+    match &e.kind {
+        LuceneErrorKind::IllegalArgument { message: m, .. }
+        | LuceneErrorKind::CorruptIndex { message: m, .. } => m.clone(),
+        LuceneErrorKind::IllegalState { message, .. } => message.clone(),
+        LuceneErrorKind::UnsupportedOperation { message: m, .. } => m.clone(),
         // An unchecked Java exception (the `ParseException` `Version.parse`
         // throws, for one): its `getMessage()`, and string concatenation
         // renders a `null` message as `null`.
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { message, .. },
-            ..
-        } => message.clone().unwrap_or_else(|| "null".to_string()),
+        LuceneErrorKind::Unchecked { message, .. } => {
+            message.clone().unwrap_or_else(|| "null".to_string())
+        }
         other => other.to_string(),
     }
 }

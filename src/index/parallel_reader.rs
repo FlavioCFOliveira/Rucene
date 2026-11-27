@@ -1543,13 +1543,7 @@ mod tests {
         let b = leaf(7, 7, &["b"]);
         let res = ParallelLeafReader::with_close_flag(true, vec![a, b]);
         assert!(
-            matches!(
-                res,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                })
-            ),
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. })),
             "expected IllegalArgument for mismatched maxDoc"
         );
     }
@@ -1723,13 +1717,9 @@ mod tests {
     fn parallel_leaf_rejects_stored_fields_without_main_readers() {
         let s = leaf(2, 2, &["s"]);
         let res = ParallelLeafReader::with_stored_fields(true, Vec::new(), vec![s]);
-        assert!(matches!(
-            res,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1872,13 +1862,9 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(5, 5, &["b"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(
-            res,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -1886,13 +1872,9 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(2, 2, &["b"]), (4, 4, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(
-            res,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -1900,13 +1882,9 @@ mod tests {
         let c0 = composite(&[(2, 2, &["a"]), (3, 3, &["c"])]);
         let c1 = composite(&[(1, 1, &["b"]), (3, 3, &["d"])]);
         let res = ParallelCompositeReader::with_close_flag(true, vec![c0, c1]);
-        assert!(matches!(
-            res,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(res, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]

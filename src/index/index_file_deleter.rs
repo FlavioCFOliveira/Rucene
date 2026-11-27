@@ -395,6 +395,8 @@ impl IndexFileDeleter {
             Arc::new(move |msg_type, msg| log_info(info_stream.as_ref(), msg_type, msg))
         };
         let mut file_deleter = FileDeleter::new(Arc::clone(&directory), Some(messenger));
+        // `logInfo` drops every `MsgType.REF` message (`IndexFileDeleter.java:601-604`).
+        file_deleter.ignore_ref_messages();
 
         // First pass: walk the directory listing and seed the reference counts.
         let mut commits: Vec<Arc<CommitPoint>> = Vec::new();
@@ -753,7 +755,15 @@ impl IndexFileDeleter {
             );
         }
 
-        self.inc_ref_segment_infos(segment_infos, is_commit)?;
+        // `incRef(segmentInfos, isCommit)` reads `segmentInfos.files(isCommit)`
+        // and, for a checkpoint that is not a commit, `lastFiles.addAll(
+        // segmentInfos.files(false))` reads the same set again
+        // (`IndexFileDeleter.java:571, 592`). PERF: the set is computed once
+        // and serves both; nothing changes `segment_infos` in between.
+        let files = segment_infos.files_ordered(is_commit)?;
+        for file_name in files.iter() {
+            self.file_deleter.inc_ref(file_name);
+        }
 
         if is_commit {
             let commit_point = CommitPoint::new(
@@ -778,7 +788,7 @@ impl IndexFileDeleter {
             self.file_deleter.dec_ref_files(previous)?;
 
             // Save files so we can decr on next checkpoint/commit.
-            self.last_files.extend(segment_infos.files_ordered(false)?);
+            self.last_files.extend(files);
         }
 
         if self.info_stream.is_enabled(IFD) {
@@ -1296,7 +1306,7 @@ mod tests {
         dir.delete_file("_1.fdt").unwrap();
         let error = d.checkpoint(&sis, false, &names).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::NotFound),
+            matches!(&error.kind, LuceneErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound),
             "{error:?}"
         );
         assert!(d.last_files.is_empty(), "{:?}", d.last_files);
@@ -2101,8 +2111,7 @@ mod tests {
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
 
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
-                if *class == "java.lang.NullPointerException"),
+            matches!(&err.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"),
             "expected a NullPointerException, got {err:?}"
         );
     }
@@ -2129,13 +2138,7 @@ mod tests {
         // here.
         let err = inflate_gens(&mut sis, &files, &NoOutputInfoStream).unwrap_err();
         assert!(
-            matches!(
-                &err,
-                LuceneError {
-                    kind: LuceneErrorKind::Unchecked { class, .. },
-                    ..
-                } if *class == "java.lang.NumberFormatException"
-            ),
+            matches!(&err.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NumberFormatException"),
             "got {err:?}"
         );
     }

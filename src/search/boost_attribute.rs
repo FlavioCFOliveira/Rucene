@@ -93,7 +93,7 @@ impl AttributeImpl for BoostAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn BoostAttribute>(),
-            std::any::type_name::<BoostAttributeImpl>(),
+            "org.apache.lucene.search.BoostAttribute",
             "boost",
             &self.boost,
         );

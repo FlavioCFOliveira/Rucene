@@ -193,8 +193,8 @@ impl LongBitSet {
     }
 
     fn verify_ghost_bits_clear(&self) -> bool {
-        for i in (self.num_words as usize)..self.bits.len() {
-            if self.bits[i] != 0 {
+        for &word in &self.bits[(self.num_words as usize)..] {
+            if word != 0 {
                 return false;
             }
         }
@@ -220,8 +220,8 @@ impl LongBitSet {
     /// Returns the number of set bits.
     pub fn cardinality(&self) -> i64 {
         let mut total = 0i64;
-        for i in 0..(self.num_words as usize) {
-            total += (self.bits[i] as u64).count_ones() as i64;
+        for &word in &self.bits[..(self.num_words as usize)] {
+            total += (word as u64).count_ones() as i64;
         }
         total
     }
@@ -435,8 +435,8 @@ impl LongBitSet {
 
     /// Scans the backing store to check if all bits are clear.
     pub fn scan_is_empty(&self) -> bool {
-        for i in 0..(self.num_words as usize) {
-            if self.bits[i] != 0 {
+        for &word in &self.bits[..(self.num_words as usize)] {
+            if word != 0 {
                 return false;
             }
         }
@@ -462,8 +462,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] ^= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = !self.bits[i];
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = !*word;
         }
         self.bits[end_word] ^= end_mask as i64;
     }
@@ -512,8 +512,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] |= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = !0i64;
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = !0i64;
         }
         self.bits[end_word] |= end_mask as i64;
     }
@@ -548,8 +548,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] &= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = 0;
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = 0;
         }
         self.bits[end_word] &= end_mask as i64;
     }
@@ -1491,18 +1491,17 @@ impl Ord for Version {
 /// `Version.parse` chains, which [`Display`] would prefix with the variant.
 fn java_message(error: &LuceneError) -> String {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind:
-                LuceneErrorKind::Unchecked {
-                    message: Some(message),
-                    ..
-                },
-            ..
-        } => message.clone(),
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
+        __lerr
+            if let LuceneErrorKind::Unchecked {
+                message: Some(message),
+                ..
+            } = &__lerr.kind =>
+        {
+            message.clone()
+        }
         other => other.to_string(),
     }
 }
@@ -1519,10 +1518,27 @@ pub const PARSE_EXCEPTION: &str = "java.text.ParseException";
 /// [`ParseException::of`]. The parse exceptions this crate raised before it
 /// existed are [`LuceneErrorKind::Unchecked`] values of class
 /// [`PARSE_EXCEPTION`], whose `errorOffset` is 0.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct ParseException {
     message: String,
     error_offset: i32,
+    /// The cause `Throwable.initCause` recorded, if any.
+    cause: Option<std::sync::Arc<LuceneError>>,
+}
+
+impl PartialEq for ParseException {
+    /// The message, the offset, and the same cause object (Java compares
+    /// throwables by identity; this compares the parse data and the cause
+    /// reference).
+    fn eq(&self, other: &Self) -> bool {
+        self.message == other.message
+            && self.error_offset == other.error_offset
+            && match (&self.cause, &other.cause) {
+                (None, None) => true,
+                (Some(a), Some(b)) => std::sync::Arc::ptr_eq(a, b),
+                _ => false,
+            }
+    }
 }
 
 impl ParseException {
@@ -1531,7 +1547,30 @@ impl ParseException {
         LuceneError::from(LuceneErrorKind::Throwable(std::sync::Arc::new(Self {
             message: message.into(),
             error_offset,
+            cause: None,
         })))
+    }
+
+    /// `new ParseException(message, errorOffset)` followed by
+    /// `initCause(cause)`, as a [`LuceneError`].
+    ///
+    /// Equivalent to `Throwable.initCause(Throwable)` on a fresh
+    /// `ParseException`, whose `getCause()` then answers `cause`.
+    pub fn error_with_cause(
+        message: impl Into<String>,
+        error_offset: i32,
+        cause: LuceneError,
+    ) -> LuceneError {
+        LuceneError::from(LuceneErrorKind::Throwable(std::sync::Arc::new(Self {
+            message: message.into(),
+            error_offset,
+            cause: Some(std::sync::Arc::new(cause)),
+        })))
+    }
+
+    /// Equivalent to `getCause()`.
+    pub fn get_cause(&self) -> Option<&std::sync::Arc<LuceneError>> {
+        self.cause.as_ref()
     }
 
     /// The `ParseException` `error` stands for, when it is one built by
@@ -1561,6 +1600,10 @@ impl crate::error::JavaThrowable for ParseException {
 
     fn get_message(&self) -> Option<&str> {
         Some(&self.message)
+    }
+
+    fn get_cause(&self) -> Option<&std::sync::Arc<LuceneError>> {
+        self.cause.as_ref()
     }
 
     fn as_any(&self) -> &dyn std::any::Any {
@@ -1746,27 +1789,22 @@ mod tests {
             "9.1.0"
         );
         match Version::parse("+.1.0") {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: PARSE_EXCEPTION,
-                        message: Some(message),
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked {
+                    class: PARSE_EXCEPTION,
+                    message: Some(message),
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(
                     message,
                     "Failed to parse major version from \"+\" (got: +.1.0)"
                 );
-                assert!(matches!(
-                    cause.as_ref(),
-                    LuceneError { kind: LuceneErrorKind::Unchecked {
+                assert!(matches!(&cause.as_ref().kind, LuceneErrorKind::Unchecked {
                         class: NUMBER_FORMAT_EXCEPTION,
                         message: Some(m),
                         ..
-                    }, .. } if m == "For input string: \"+\""
-                ));
+                    } if m == "For input string: \"+\""));
             }
             other => panic!("expected the major-version failure, got {other:?}"),
         }
@@ -2007,15 +2045,11 @@ mod tests {
             ),
         ] {
             let error = Version::parse_leniently(input).unwrap_err();
-            let LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: PARSE_EXCEPTION,
-                        message: Some(message),
-                        cause: Some(source),
-                    },
-                ..
-            } = &error
+            let LuceneErrorKind::Unchecked {
+                class: PARSE_EXCEPTION,
+                message: Some(message),
+                cause: Some(source),
+            } = &error.kind
             else {
                 panic!("{error:?}");
             };

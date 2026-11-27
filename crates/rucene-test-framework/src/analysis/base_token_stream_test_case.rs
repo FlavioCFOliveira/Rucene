@@ -96,7 +96,7 @@ impl AttributeImpl for CheckClearAttributesAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn CheckClearAttributesAttribute>(),
-            std::any::type_name::<CheckClearAttributesAttributeImpl>(),
+            "org.apache.lucene.tests.analysis.BaseTokenStreamTestCase$CheckClearAttributesAttribute",
             "clearCalled",
             &self.clear_called,
         );

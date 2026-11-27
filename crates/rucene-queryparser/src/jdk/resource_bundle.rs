@@ -503,7 +503,17 @@ fn decode(bytes: &[u8]) -> Vec<u16> {
 ///
 /// `IllegalArgumentException("Malformed \\uxxxx encoding.")`.
 pub fn load(text: &[u16]) -> Result<HashMap<String, String>> {
-    let mut map = HashMap::new();
+    Ok(load_pairs(text)?.into_iter().collect())
+}
+
+/// The `put(key, value)` calls `Properties.load(Reader)` makes, in order
+/// (the same pairs as [`load`], before a later key replaces an earlier one).
+///
+/// # Errors
+///
+/// `IllegalArgumentException("Malformed \\uxxxx encoding.")`.
+pub fn load_pairs(text: &[u16]) -> Result<Vec<(String, String)>> {
+    let mut map = Vec::new();
     let mut reader = LineReader { text, off: 0 };
     while let Some(line) = reader.read_line() {
         let limit = line.len();
@@ -544,7 +554,7 @@ pub fn load(text: &[u16]) -> Result<HashMap<String, String>> {
         }
         let key = load_convert(&line[..key_len])?;
         let value = load_convert(&line[value_start..limit])?;
-        map.insert(key, value);
+        map.push((key, value));
     }
     Ok(map)
 }

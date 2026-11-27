@@ -483,12 +483,12 @@ impl DirectFieldBuilder {
                 self.same_counts[i] = 0;
                 i += 1;
             }
-            for j in limit..term_length {
-                self.same_counts[j] = 1;
+            for count in &mut self.same_counts[limit..term_length] {
+                *count = 1;
             }
         } else {
-            for i in 0..term_length {
-                self.same_counts[i] += 1;
+            for count in &mut self.same_counts[..term_length] {
+                *count += 1;
             }
         }
     }

@@ -98,10 +98,7 @@ fn index_with(count: usize) -> Arc<dyn Directory> {
 
 fn corrupt_message(error: &LuceneError) -> &str {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message, .. },
-            ..
-        } => message,
+        __lerr if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => message,
         other => panic!("a CorruptIndexException, got {other:?}"),
     }
 }
@@ -253,15 +250,14 @@ fn add_indexes_codec_readers_refuses_readers_over_the_limit() {
 
     let error = dest_writer.add_indexes_codec_readers(&leaves).unwrap_err();
     match &error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => assert!(
-            message.contains(&format!(
-                "number of documents in the index cannot exceed {writer_max_docs}"
-            )),
-            "{message}"
-        ),
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            assert!(
+                message.contains(&format!(
+                    "number of documents in the index cannot exceed {writer_max_docs}"
+                )),
+                "{message}"
+            )
+        }
         other => panic!("an IllegalArgumentException, got {other:?}"),
     }
     assert_eq!(scheduler.add_indexes_merges_taken.load(Ordering::SeqCst), 0);

@@ -141,3 +141,94 @@ pub(crate) fn span_query_list_hash(queries: &[Arc<dyn SpanQuery>]) -> i32 {
         .iter()
         .fold(1i32, |h, q| h.wrapping_mul(31).wrapping_add(q.query_hash()))
 }
+
+/// `query instanceof SpanQuery`, with the query as a [`SpanQuery`].
+///
+/// Equivalent to Java's `query instanceof SpanQuery` followed by the cast
+/// `(SpanQuery) query`.
+///
+/// **Divergence.** Java's `instanceof` recognizes every subclass of
+/// `SpanQuery`; Rust cannot cast a `&dyn Query` to another trait object, so
+/// this function recognizes the span queries of this crate (the `spans` and
+/// `payloads` packages, `SpanGapQuery` included). A `SpanQuery` implemented
+/// in another crate is not recognized.
+pub fn as_span_query(query: &dyn Query) -> Option<&dyn SpanQuery> {
+    use crate::payloads::payload_score_query::PayloadScoreQuery;
+    use crate::payloads::span_payload_check_query::SpanPayloadCheckQuery;
+    use crate::spans::field_masking_span_query::FieldMaskingSpanQuery;
+    use crate::spans::span_containing_query::SpanContainingQuery;
+    use crate::spans::span_first_query::SpanFirstQuery;
+    use crate::spans::span_multi_term_query_wrapper::SpanMultiTermQueryWrapper;
+    use crate::spans::span_near_query::{SpanGapQuery, SpanNearQuery};
+    use crate::spans::span_not_query::SpanNotQuery;
+    use crate::spans::span_or_query::SpanOrQuery;
+    use crate::spans::span_position_range_query::SpanPositionRangeQuery;
+    use crate::spans::span_term_query::SpanTermQuery;
+    use crate::spans::span_within_query::SpanWithinQuery;
+    let any = query.as_any();
+    macro_rules! try_span {
+        ($($t:ty),*) => {
+            $(if let Some(s) = any.downcast_ref::<$t>() {
+                return Some(s);
+            })*
+        };
+    }
+    try_span!(
+        SpanTermQuery,
+        SpanNearQuery,
+        SpanOrQuery,
+        SpanNotQuery,
+        SpanFirstQuery,
+        SpanPositionRangeQuery,
+        SpanContainingQuery,
+        SpanWithinQuery,
+        FieldMaskingSpanQuery,
+        SpanMultiTermQueryWrapper,
+        SpanGapQuery,
+        PayloadScoreQuery,
+        SpanPayloadCheckQuery
+    );
+    None
+}
+
+/// [`as_span_query`] answering an owned handle: a clone of the recognized
+/// span query (Java shares the object itself; every span query is
+/// immutable, so the clone is indistinguishable from it).
+pub fn to_span_query_arc(query: &dyn Query) -> Option<Arc<dyn SpanQuery>> {
+    use crate::payloads::payload_score_query::PayloadScoreQuery;
+    use crate::payloads::span_payload_check_query::SpanPayloadCheckQuery;
+    use crate::spans::field_masking_span_query::FieldMaskingSpanQuery;
+    use crate::spans::span_containing_query::SpanContainingQuery;
+    use crate::spans::span_first_query::SpanFirstQuery;
+    use crate::spans::span_multi_term_query_wrapper::SpanMultiTermQueryWrapper;
+    use crate::spans::span_near_query::{SpanGapQuery, SpanNearQuery};
+    use crate::spans::span_not_query::SpanNotQuery;
+    use crate::spans::span_or_query::SpanOrQuery;
+    use crate::spans::span_position_range_query::SpanPositionRangeQuery;
+    use crate::spans::span_term_query::SpanTermQuery;
+    use crate::spans::span_within_query::SpanWithinQuery;
+    let any = query.as_any();
+    macro_rules! try_span {
+        ($($t:ty),*) => {
+            $(if let Some(s) = any.downcast_ref::<$t>() {
+                return Some(Arc::new(s.clone()));
+            })*
+        };
+    }
+    try_span!(
+        SpanTermQuery,
+        SpanNearQuery,
+        SpanOrQuery,
+        SpanNotQuery,
+        SpanFirstQuery,
+        SpanPositionRangeQuery,
+        SpanContainingQuery,
+        SpanWithinQuery,
+        FieldMaskingSpanQuery,
+        SpanMultiTermQueryWrapper,
+        SpanGapQuery,
+        PayloadScoreQuery,
+        SpanPayloadCheckQuery
+    );
+    None
+}

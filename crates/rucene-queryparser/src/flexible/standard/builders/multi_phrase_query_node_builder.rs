@@ -24,7 +24,6 @@ use std::sync::Arc;
 use rucene::error::{LuceneError, Result};
 use rucene::index::Term;
 use rucene::search::multi_phrase_query::Builder;
-use rucene::search::term_query::TermQuery;
 use rucene::search::Query;
 
 use super::standard_query_builder::{
@@ -62,7 +61,7 @@ impl StandardQueryBuilder for MultiPhraseQueryNodeBuilder {
                 let term_query = built_query(child.as_ref())?;
                 let term_query = match &term_query {
                     None => None,
-                    Some(q) => Some(q.as_any().downcast_ref::<TermQuery>().ok_or_else(|| {
+                    Some(q) => Some(q.as_term_query().ok_or_else(|| {
                         query_class_cast(q.as_ref(), "org.apache.lucene.search.TermQuery")
                     })?),
                 };

@@ -355,13 +355,7 @@ mod tests {
     #[test]
     fn with_version_rejects_out_of_range() {
         let err = Lucene104PostingsFormat::with_version(25, 48, -1).expect_err("bad version");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]

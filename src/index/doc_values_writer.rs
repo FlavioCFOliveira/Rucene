@@ -2310,7 +2310,7 @@ impl<V: PackedLongValuesAccess> DocValuesIterator for BufferedSorted<V> {
     }
 }
 
-impl<V: PackedLongValuesAccess> SortedDocValues for BufferedSorted<V> {
+impl<V: PackedLongValuesAccess + Send + Sync> SortedDocValues for BufferedSorted<V> {
     fn ord_value(&self) -> Result<i32> {
         Ok(self.ord)
     }
@@ -4026,10 +4026,9 @@ mod tests {
             BytesRef::new(b"b".to_vec()),
         ])));
         assert_eq!(set.lookup_ord((1i64 << 32) + 1).unwrap().slice(), b"b");
-        assert!(matches!(
-            set.lookup_ord(1i64 << 31),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message == "ord=-2147483648"
-        ));
+        assert!(
+            matches!(set.lookup_ord(1i64 << 31), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { ref message, .. } if message == "ord=-2147483648"))
+        );
     }
 
     /// `hash.get(sortedValues[Math.toIntExact(ord)], scratch)`
@@ -4045,10 +4044,9 @@ mod tests {
         let pool = test_pool();
         let mut hash = Arc::new(crate::util::bytes_ref_hash::BytesRefHash::new(counter()));
         let dictionary = Dictionary::build(&mut hash, &pool).unwrap();
-        assert!(matches!(
-            dictionary.lookup_ord(i64::from(i32::MAX) + 1, &mut BytesRef::default()),
-            Err(LuceneError { kind: LuceneErrorKind::Arithmetic(ref message), .. }) if message == "integer overflow"
-        ));
+        assert!(
+            matches!(dictionary.lookup_ord(i64::from(i32::MAX) + 1, &mut BytesRef::default()), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Arithmetic(ref message) if message == "integer overflow"))
+        );
     }
 
     /// `hash.get(sortedValues[ord], scratch); return scratch;`
@@ -4425,8 +4423,7 @@ mod tests {
         writer.add_value(4, 1).unwrap();
         let error = writer.add_value(4, 2).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("appears more than once") && m.contains("count")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("appears more than once") && m.contains("count")),
             "unexpected error: {error:?}"
         );
         // A doc id that goes backwards is the same failure, and the rejected
@@ -4446,7 +4443,7 @@ mod tests {
         with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap();
         let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert_eq!(consumer.fields.len(), 1);
@@ -4685,8 +4682,7 @@ mod tests {
         writer.add_value(2, b"one").unwrap();
         let error = writer.add_value(2, b"two").unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("appears more than once") && m.contains("blob")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("appears more than once") && m.contains("blob")),
             "unexpected error: {error:?}"
         );
         assert!(writer.add_value(1, b"backwards").is_err());
@@ -4740,8 +4736,7 @@ mod tests {
         writer.add_value(3, b"one", &mut pool).unwrap();
         let error = writer.add_value(3, b"two", &mut pool).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("appears more than once") && m.contains("only one value is allowed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("appears more than once") && m.contains("only one value is allowed")),
             "unexpected error: {error:?}"
         );
         // A doc id that goes backwards is the same failure.
@@ -4836,8 +4831,7 @@ mod tests {
         let mut consumer = RecordingConsumer::default();
         let error = with_state(0, |state| writer.flush(state, None, &mut consumer)).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m == "Out of order doc ids: last=3, next=2"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m == "Out of order doc ids: last=3, next=2"),
             "unexpected error: {error:?}"
         );
     }
@@ -4924,8 +4918,7 @@ mod tests {
         let error =
             with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m == "Out of order doc ids: last=3, next=2"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m == "Out of order doc ids: last=3, next=2"),
             "unexpected error: {error:?}"
         );
     }
@@ -5014,8 +5007,7 @@ mod tests {
             let mut writer = DocValuesWriter::new(field("f", 0, doc_values_type), counter());
             let error = writer.add_value(0, &field_value, &mut pool).unwrap_err();
             assert!(
-                matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                    if m.contains("null value not allowed")),
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("null value not allowed")),
                 "unexpected error for {doc_values_type:?}: {error:?}"
             );
         }
@@ -5124,7 +5116,7 @@ mod tests {
         let error =
             with_state(0, |state| writer.flush(state, None, &mut consumer, &pool)).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert!(writer

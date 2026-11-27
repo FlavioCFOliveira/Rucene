@@ -954,8 +954,8 @@ impl Scorer for WANDScorer {
     fn get_max_score(&mut self, up_to: i32) -> Result<f32> {
         let num_scorers = self.core.wrappers.len();
         let mut max_score_sum = 0.0f64;
-        for position in 0..num_scorers {
-            let scorer = self.core.wrappers[position].scorer();
+        for wrapper in &mut self.core.wrappers[..num_scorers] {
+            let scorer = wrapper.scorer();
             if Scorer::doc_id(scorer) <= up_to {
                 max_score_sum += f64::from(scorer.get_max_score(up_to)?);
             }

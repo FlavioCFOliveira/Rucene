@@ -93,7 +93,7 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
-use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
+use crate::index::{DocumentsIterable, DocumentsIterator, IndexableFieldIterable, SingleDocument};
 use crate::index::{FieldInfos, IndexFileName, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
@@ -4461,7 +4461,9 @@ impl DwptGuard {
             // `next()` and the `hasNext()` that tells the last document run in
             // Java's order, so an iterator failure interrupts the block where
             // Java's does (`DocumentsWriterPerThread.java:268-271`).
-            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.iterator();
+            // PERF: `docs_iter`, which iterates a one-document block without
+            // boxing the iterator.
+            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.docs_iter();
             while iterator.has_next()? {
                 let doc = iterator.next()?;
                 let is_last_doc = !iterator.has_next()?;
@@ -6090,12 +6092,9 @@ impl DocumentsWriterFlushControl {
             let aborted = DocumentsWriterPerThread::lock(dwpt).abort();
             self.do_after_flush(dwpt);
             match aborted {
-                Err(
-                    error @ LuceneError {
-                        kind: LuceneErrorKind::AssertionError(_),
-                        ..
-                    },
-                ) => Err(error),
+                Err(error) if matches!(error.kind, LuceneErrorKind::AssertionError(_)) => {
+                    Err(error)
+                }
                 _ => Ok(()),
             }
         };
@@ -6622,7 +6621,8 @@ impl DocumentsWriter {
 
         let outcome: Result<(i64, Option<Arc<DocumentsWriterPerThread>>)> = (|| {
             self.ensure_open()?;
-            let shared = Arc::clone(&self.shared);
+            // PERF: borrowed, not an `Arc` clone per document (rmp #679).
+            let shared = &self.shared;
             let indexed = guard.update_documents(
                 docs,
                 del_node,
@@ -8004,13 +8004,7 @@ mod tests {
         let error = queue
             .add_ticket(|| Err(LuceneError::illegal_state("boom".to_string())))
             .unwrap_err();
-        assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&error.kind, LuceneErrorKind::IllegalState { .. }));
         assert_eq!(queue.ticket_count(), 0);
     }
 
@@ -9028,13 +9022,7 @@ mod tests {
         let fixture = new_writer(config(1_000_000, 16.0));
         fixture.writer.close();
         let error = fixture.writer.update_document(&doc("a"), None).unwrap_err();
-        assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&error.kind, LuceneErrorKind::AlreadyClosed { .. }));
     }
 
     #[test]
@@ -9168,10 +9156,9 @@ mod tests {
         assert_eq!(flush_control.num_blocked_flushes(), 2);
 
         match flush_control.abort_pending_flushes() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AssertionError(message),
-                ..
-            }) => assert_eq!(message, "scripted"),
+            Err(ref __lerr) if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+                assert_eq!(message, "scripted")
+            }
             other => panic!("the AssertionError must propagate, got {other:?}"),
         }
         assert_eq!(flush_control.num_blocked_flushes(), 0);

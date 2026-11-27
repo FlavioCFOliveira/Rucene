@@ -1352,8 +1352,8 @@ impl<'a, O: Outputs> FSTCompiler<'a, O> {
         let mut presence_bits: u8 = 1; // The first arc is always present.
         let mut presence_index = 0i32;
         let mut previous_label = node_in.arcs[0].label;
-        for arc_idx in 1..node_in.num_arcs {
-            let label = node_in.arcs[arc_idx].label;
+        for arc in &node_in.arcs[1..node_in.num_arcs] {
+            let label = arc.label;
             debug_assert!(label > previous_label);
             presence_index += label - previous_label;
             while presence_index >= 8 {

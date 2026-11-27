@@ -1157,10 +1157,7 @@ mod tests {
             .add_packed_value(0, &packed(&[0, 0, 0]))
             .expect_err("a short value would shift every later value");
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            } => {
+            ref __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
                 assert!(message.contains("has length=3"), "{message}");
                 assert!(message.contains("should be 4"), "{message}");
             }
@@ -1345,26 +1342,14 @@ mod tests {
             .flush(&mut points_writer, None)
             .expect_err("two entries for one field would corrupt the .kdm");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
         let error = writer
             .add_packed_value(1, &packed(&[0, 0, 0, 2]))
             .expect_err("a value added after the flush would be lost");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -1415,10 +1400,7 @@ mod tests {
         assert_eq!(values.num_dimensions().unwrap(), 1);
         assert_eq!(values.bytes_per_dimension().unwrap(), 4);
         match reader.get_values("other") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }) => {}
+            Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }) => {}
             Err(other) => panic!("expected IllegalArgument, got {other:?}"),
             Ok(_) => panic!("Lucene refuses any other field name"),
         }
@@ -1598,13 +1580,9 @@ mod tests {
         let tree = tree_of(&mut writer);
         // `MutablePointTree.clone()` throws `UnsupportedOperationException`
         // (`MutablePointTree.java:52-55`).
-        assert!(matches!(
-            tree.clone_tree(),
-            Err(LuceneError {
-                kind: crate::error::LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(tree.clone_tree(), Err(ref __lerr) if matches!(&__lerr.kind, crate::error::LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]

@@ -18,12 +18,24 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 ## Project structure
 
 - `src/` — the `rucene` crate (`lucene/core`). Its top-level modules mirror Lucene Core's packages: `analysis`, `codecs`, `document`, `geo`, `index`, `internal`, `search`, `store`, `util`, plus `error`.
-- `crates/` — the other nine workspace members: seven ported modules and two command-line examples:
+- `crates/` — the other twenty-one workspace members: fourteen ported Lucene modules, five ported third-party libraries (randomizedtesting, spatial4j, s2-geometry, NekoHTML, ICU4J) and two command-line examples:
   - `rucene-codecs` — `lucene/codecs` (the `org.apache.lucene.codecs.*` formats outside core);
   - `rucene-analysis-common` — `lucene/analysis/common` (see [Analysis: `rucene-analysis-common`](#analysis-rucene-analysis-common));
   - `rucene-queries` — `lucene/queries` (function queries and value sources, intervals, spans, payload queries, more-like-this);
   - `rucene-queryparser` — `lucene/queryparser` (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers);
   - `rucene-sandbox` — `lucene/sandbox`, limited to `FuzzyLikeThisQuery`;
+  - `rucene-spatial3d` — `lucene/spatial3d` (Geo3D planar geometry and the `Geo3DPoint` field; see `specs/modules/spatial3d.md`);
+  - `rucene-spatial-extras` — `lucene/spatial-extras` (spatial strategies, prefix trees, heatmaps; see `specs/modules/spatial-extras.md`);
+  - `rucene-spatial-test-fixtures` — `lucene/spatial-test-fixtures` (random Geo3D shapes for the spatial tests);
+  - `spatial4j` — LocationTech spatial4j 0.8, limited to the types `spatial-extras` and `benchmark` use (test helpers behind the `test-helpers` feature);
+  - `s2-geometry` — s2-geometry-library-java 1.0.0, limited to the types `spatial-extras` uses;
+  - `rucene-memory` — `lucene/memory` (`MemoryIndex`, the single-document in-memory index; see `specs/modules/memory.md`);
+  - `rucene-highlighter` — `lucene/highlighter` (the original, fast vector, unified and match highlighters; see `specs/modules/highlighter.md`);
+  - `rucene-facet` — `lucene/facet` (taxonomy, sorted-set, range, range-on-range and facet-set facets, drill-down and drill-sideways; see `specs/modules/facet.md`);
+  - `rucene-benchmark` — `lucene/benchmark` (the `byTask` benchmark framework and the `quality` TREC evaluation; see `specs/modules/benchmark.md`);
+  - `rucene-analysis-icu` — `lucene/analysis/icu` (ICU normalization, folding, segmentation, transforms and collation; see `specs/modules/analysis-icu.md`);
+  - `icu4j` — ICU4J 77.1, limited to the classes `analysis/icu` and `benchmark` use, with the ICU data they read (see `specs/modules/icu4j.md`);
+  - `nekohtml` — NekoHTML 1.9.17, limited to the SAX HTML parser `benchmark` uses (with the Xerces-J and SAX types it needs; see `specs/modules/nekohtml.md`);
   - `randomizedtesting` — randomizedtesting 2.8.1 (`com.carrotsearch.randomizedtesting`), the runner of Lucene's tests;
   - `rucene-test-framework` — `lucene/test-framework`;
   - `rucene-cli-example` — not a Lucene module: the `rucene-cli` example, which indexes and searches the USGS earthquake catalog;
@@ -31,13 +43,17 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 - `tests/` — integration tests, portability tests (`tests/portability/`), fuzz tests (`tests/fuzz/`), and the Java oracle harness (`tests/fixtures/java-codec-harness/`).
 - `specs/` — specifications: overview, architecture, compatibility, security, testing, workflow, and one file per module (`specs/modules/`).
 - `tools/` — development tooling, not part of any crate:
-  - `tools/kg/` — Python scripts that build the project Knowledge Graph (see `tools/kg/README.md`);
+  - `tools/kgsync/` — the fast, differential synchronisation of the project Knowledge Graph from the Rust and Java ASTs (see `tools/kgsync/README.md`);
   - `tools/gen/` — code generators (DFA tables, JDK collator and time-zone data) and the test-translation guide `J2R_GUIDE.md`.
 - `knowledge-model.md` — the label and predicate model of the project Knowledge Graph.
 
 ## Getting started
 
-Prerequisite: Rust 1.89 or later (`rust-version` of every workspace crate).
+Prerequisites: Rust 1.100 or later (`rust-version` of every workspace crate).
+On x86-64 Linux, `.cargo/config.toml` builds for `target-cpu=x86-64-v3`, so the
+binaries require a CPU with AVX2, FMA and BMI2 (bit counts compile to `popcnt`
+and the vectorised kernels use 256-bit AVX2 lanes, as Lucene's JIT emits on the
+same hardware).
 
 ```bash
 cargo build                                   # the rucene crate

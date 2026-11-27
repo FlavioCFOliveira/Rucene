@@ -2209,10 +2209,9 @@ mod tests {
     /// item 30): `IllegalArgumentException: length needs to be >= 1`.
     #[test]
     fn an_empty_sparse_fixed_bit_set_is_lucenes_illegal_argument() {
-        assert!(matches!(
-            SparseFixedBitSet::new(0),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message == "length needs to be >= 1"
-        ));
+        assert!(
+            matches!(SparseFixedBitSet::new(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { ref message, .. } if message == "length needs to be >= 1"))
+        );
     }
 
     /// A tiny deterministic LCG for reproducible pseudo-random tests without a

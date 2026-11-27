@@ -1039,7 +1039,7 @@ mod ready_tests {
 
         r.close().unwrap();
         assert!(!r.mark_supported());
-        match r.ready().unwrap_err().kind {
+        match r.ready().unwrap_err().into_kind() {
             LuceneErrorKind::Io(e) => {
                 assert_eq!(java_to_string(&e), "java.io.IOException: Stream closed")
             }

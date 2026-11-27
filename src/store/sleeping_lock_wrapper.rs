@@ -105,6 +105,12 @@ impl SleepingLockWrapper {
 }
 
 impl Directory for SleepingLockWrapper {
+    /// This directory, for a caller that tests its class (Java's
+    /// `getClass()` and `instanceof`).
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn list_all(&self) -> Result<Vec<String>> {
         self.inner.list_all()
     }
@@ -269,10 +275,9 @@ mod tests {
             SleepingLockWrapper::with_poll_interval(Box::new(ByteBuffersDirectory::new()), 10, 0)
                 .unwrap();
         match dir.obtain_lock("write.lock") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Arithmetic(message),
-                ..
-            }) => assert_eq!(message, "/ by zero"),
+            Err(ref __lerr) if let LuceneErrorKind::Arithmetic(message) = &__lerr.kind => {
+                assert_eq!(message, "/ by zero")
+            }
             Err(other) => panic!("expected ArithmeticException, got {other:?}"),
             Ok(_) => panic!("expected ArithmeticException, got a lock"),
         }

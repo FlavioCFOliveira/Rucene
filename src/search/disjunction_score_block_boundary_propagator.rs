@@ -124,8 +124,8 @@ impl DisjunctionScoreBlockBoundaryPropagator {
     /// Propagates any I/O error raised while shallow-advancing.
     pub fn advance_shallow(&mut self, scorers: &mut dyn SubScorers, target: i32) -> Result<i32> {
         // For scorers that are below the lead index, just propagate.
-        for i in 0..self.lead_index {
-            let scorer = scorers.sub_scorer(self.order[i]);
+        for &index in &self.order[..self.lead_index] {
+            let scorer = scorers.sub_scorer(index);
             if Scorer::doc_id(scorer) < target {
                 scorer.advance_shallow(target)?;
             }
@@ -136,8 +136,8 @@ impl DisjunctionScoreBlockBoundaryPropagator {
         let lead_doc = Scorer::doc_id(lead_scorer);
         let mut up_to = lead_scorer.advance_shallow(lead_doc.max(target))?;
 
-        for i in (self.lead_index + 1)..self.order.len() {
-            let scorer = scorers.sub_scorer(self.order[i]);
+        for &index in &self.order[(self.lead_index + 1)..] {
+            let scorer = scorers.sub_scorer(index);
             if Scorer::doc_id(scorer) <= target {
                 up_to = scorer.advance_shallow(target)?.min(up_to);
             }

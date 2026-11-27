@@ -789,7 +789,7 @@ mod next_buffer_overflow_tests {
         let charged_before = bytes_used.load(Ordering::Acquire);
         let error = pool.next_buffer().unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(message) if message == "integer overflow"),
             "{error:?}"
         );
         assert_eq!(
@@ -898,11 +898,8 @@ mod tests {
         let too_long = vec![0u8; MAX_TERM_LENGTH + 1];
         let error = pool.add_bytes_ref(&too_long).expect_err("must be rejected");
         assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
-                ..
-            }
+            &error.kind,
+            LuceneErrorKind::MaxBytesLengthExceeded(_)
         ));
         // The longest accepted value still round-trips.
         let longest = vec![1u8; MAX_TERM_LENGTH];

@@ -178,14 +178,12 @@ fn sorts() -> Vec<Sort> {
 
 fn java_exception(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => message.clone(),
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
+        __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -242,10 +240,7 @@ fn rucene_report() -> String {
                     .collect();
                 out.push_str(&format!("{label} -> {}\n", ids.join(" ")));
             }
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
                 out.push_str(&format!("{label} -> CorruptIndexException: {message}\n"));
             }
             Err(error) => out.push_str(&format!("{label} -> {}\n", java_exception(&error))),

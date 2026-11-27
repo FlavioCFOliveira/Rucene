@@ -1,0 +1,25 @@
+[package]
+name = "nekohtml"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.100"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of NekoHTML 1.9.17, limited to the SAX parser Apache Lucene 10.5.0 lucene/benchmark's DemoHTMLParser uses, with the Xerces 2.12.2 and SAX types it needs."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "nekohtml"
+
+# NekoHTML 1.9.17's own dependency is xercesImpl 2.12.2 (with xml-apis
+# 1.4.01), as `lucene/benchmark` resolves it; the types of both that the parser
+# reaches are ported in this crate. The JDK behaviours the port reproduces come
+# from the workspace's JDK emulations: `java.nio.charset` and
+# `java.io.InputStreamReader` (rucene-analysis-common), and
+# `java.util.ResourceBundle`, `java.text.MessageFormat` and `java.util.Locale`
+# (rucene-queryparser).
+[dependencies]
+rucene = { path = "../.." }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+rucene-queryparser = { path = "../rucene-queryparser" }

@@ -1583,10 +1583,9 @@ impl IndexerThreadInterrupt {
             }));
             match outcome {
                 Ok(Ok(())) => {}
-                Ok(Err(LuceneError {
-                    kind: LuceneErrorKind::ThreadInterrupted(re),
-                    ..
-                })) => {
+                Ok(Err(ref __lerr))
+                    if let LuceneErrorKind::ThreadInterrupted(re) = &__lerr.kind =>
+                {
                     // NOTE: important to leave this verbosity/noise on!!
                     // This test doesn't repro easily so when Jenkins hits a fail
                     // we need to study where the interrupts struck!

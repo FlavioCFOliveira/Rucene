@@ -1,0 +1,34 @@
+[package]
+name = "rucene-spatial-extras"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.100"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/spatial-extras (spatial strategies over spatial4j shapes)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_spatial_extras"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-spatial3d = { path = "../rucene-spatial3d" }
+spatial4j = { path = "../spatial4j" }
+s2-geometry = { path = "../s2-geometry" }
+# The JDK `java.util.Calendar` emulation `DateRangePrefixTree` works on
+# (`rucene_queryparser::jdk::calendar`; coordinator decision, sprint 17).
+rucene-queryparser = { path = "../rucene-queryparser" }
+
+[dev-dependencies]
+# The sprint-17 Java-oracle harness (`tests/sprint17_oracle/`, rmp #628)
+# draws on `randomizedtesting`.
+randomizedtesting = { path = "../randomizedtesting" }
+# The tests port Lucene's spatial-extras tests onto lucene/test-framework;
+# Lucene's `spatial-extras/build.gradle` adds lucene/spatial-test-fixtures
+# and the spatial4j test jar (its `TestLog`, `RandomizedShapeTest` and
+# `RectIntersectionTestHelper`: the `test-helpers` feature).
+rucene-test-framework = { path = "../rucene-test-framework" }
+rucene-spatial-test-fixtures = { path = "../rucene-spatial-test-fixtures" }
+spatial4j = { path = "../spatial4j", features = ["test-helpers"] }

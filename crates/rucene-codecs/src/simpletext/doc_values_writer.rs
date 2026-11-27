@@ -349,7 +349,7 @@ impl SimpleTextDocValuesWriter {
     /// `data.writeBytes`, which does not escape).
     fn write_sorted_values(
         &mut self,
-        mut terms: Box<dyn rucene::index::TermsEnum>,
+        mut terms: Box<dyn rucene::index::TermsEnum + '_>,
         encoder_len: usize,
         max_length: i32,
     ) -> Result<i64> {
@@ -519,9 +519,11 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
 
         let mut value_count = 0i32;
         let mut max_length = -1i32;
-        let mut terms = sorted()?
-            .ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?
-            .terms_enum()?;
+        // `valuesProducer.getSorted(field).termsEnum()`: the values Java leaves
+        // to the enum's reference live in `terms_values`.
+        let mut terms_values =
+            sorted()?.ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?;
+        let mut terms = terms_values.terms_enum()?;
         while let Some(value) = terms.next()? {
             max_length = max_length.max(value.length as i32);
             value_count += 1;
@@ -546,13 +548,11 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         self.line(ORDPATTERN, &ord_pattern)?;
 
         // for asserts:
-        let values_seen = self.write_sorted_values(
-            sorted()?
-                .ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?
-                .terms_enum()?,
-            max_bytes_length,
-            max_length,
-        )?;
+        drop(terms);
+        let mut terms_values =
+            sorted()?.ok_or_else(|| npe_terms_enum("SortedDocValues", "getSorted"))?;
+        let values_seen =
+            self.write_sorted_values(terms_values.terms_enum()?, max_bytes_length, max_length)?;
 
         debug_assert_eq!(values_seen, i64::from(value_count));
 
@@ -670,9 +670,11 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
 
         let mut value_count = 0i64;
         let mut max_length = 0i32;
-        let mut terms = sorted_set()?
-            .ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?
-            .terms_enum()?;
+        // `valuesProducer.getSortedSet(field).termsEnum()`: the values Java leaves
+        // to the enum's reference live in `terms_values`.
+        let mut terms_values =
+            sorted_set()?.ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?;
+        let mut terms = terms_values.terms_enum()?;
         while let Some(value) = terms.next()? {
             max_length = max_length.max(value.length as i32);
             value_count += 1;
@@ -717,13 +719,11 @@ impl DocValuesConsumer for SimpleTextDocValuesWriter {
         self.line(ORDPATTERN, &ord_pattern)?;
 
         // for asserts:
-        let values_seen = self.write_sorted_values(
-            sorted_set()?
-                .ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?
-                .terms_enum()?,
-            max_bytes_length,
-            max_length,
-        )?;
+        drop(terms);
+        let mut terms_values =
+            sorted_set()?.ok_or_else(|| npe_terms_enum("SortedSetDocValues", "getSortedSet"))?;
+        let values_seen =
+            self.write_sorted_values(terms_values.terms_enum()?, max_bytes_length, max_length)?;
 
         debug_assert_eq!(values_seen, value_count);
 

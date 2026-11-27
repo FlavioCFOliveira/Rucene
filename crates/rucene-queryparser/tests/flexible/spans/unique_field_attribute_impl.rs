@@ -103,7 +103,7 @@ impl AttributeImpl for UniqueFieldAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn UniqueFieldAttribute>(),
-            "UniqueFieldAttribute",
+            "org.apache.lucene.queryparser.flexible.spans.UniqueFieldAttribute",
             "uniqueField",
             &self.unique_field,
         );

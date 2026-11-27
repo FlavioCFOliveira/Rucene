@@ -555,20 +555,18 @@ mod tests {
             match CommandLineUtil::new_fs_directory(name, tmp.path().join("c1")) {
                 // The cause is the `NoSuchMethodException` (`PassAOracle`,
                 // section 5).
-                Err(LuceneError {
-                    kind:
-                        LuceneErrorKind::IllegalArgument {
-                            message,
-                            cause: Some(cause),
-                        },
-                    ..
-                }) => {
-                    assert_eq!(
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument {
                         message,
+                        cause: Some(cause),
+                    } = &__lerr.kind =>
+                {
+                    assert_eq!(
+                        *message,
                         format!("{name} constructor with Path as parameter not found")
                     );
                     assert!(
-                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m ==
+                        matches!(&cause.kind, LuceneErrorKind::Other(m) if m ==
                             "org.apache.lucene.store.FSDirectory.<init>(java.nio.file.Path,\
                              org.apache.lucene.store.LockFactory)"),
                         "{cause:?}"
@@ -591,10 +589,7 @@ mod tests {
             tmp.path().join("c3"),
             Box::new(NativeFSLockFactory),
         ) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Other(message),
-                ..
-            }) => assert_eq!(
+            Err(ref __lerr) if let LuceneErrorKind::Other(message) = &__lerr.kind => assert_eq!(
                 message,
                 "org.apache.lucene.store.FSDirectory.<init>(java.nio.file.Path,\
                  org.apache.lucene.store.LockFactory)"
@@ -630,17 +625,15 @@ mod tests {
             match CommandLineUtil::new_fs_directory(name, &file) {
                 // The cause is the `InvocationTargetException`, which this
                 // port renders as `Other` carrying the constructor's failure.
-                Err(LuceneError {
-                    kind:
-                        LuceneErrorKind::IllegalArgument {
-                            message,
-                            cause: Some(cause),
-                        },
-                    ..
-                }) => {
-                    assert_eq!(message, format!("Error creating {name} instance"));
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    } = &__lerr.kind =>
+                {
+                    assert_eq!(*message, format!("Error creating {name} instance"));
                     assert!(
-                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::Other(m), .. } if *m == invocation),
+                        matches!(&cause.kind, LuceneErrorKind::Other(m) if *m == invocation),
                         "{cause:?}"
                     );
                 }
@@ -695,10 +688,9 @@ mod tests {
                 &file,
                 Box::new(NativeFSLockFactory),
             ) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Other(message),
-                    ..
-                }) => assert_eq!(message, cause, "{kind:?}"),
+                Err(ref __lerr) if let LuceneErrorKind::Other(message) = &__lerr.kind => {
+                    assert_eq!(*message, cause, "{kind:?}")
+                }
                 other => panic!(
                     "expected InvocationTargetException for {kind:?}, got {:?}",
                     other.err()
@@ -723,17 +715,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         for name in ["", "   "] {
             match CommandLineUtil::new_fs_directory(name, tmp.path().join("e")) {
-                Err(LuceneError {
-                    kind:
-                        LuceneErrorKind::IllegalArgument {
-                            message,
-                            cause: Some(cause),
-                        },
-                    ..
-                }) => {
-                    assert_eq!(message, format!("Error creating {name} instance"));
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    } = &__lerr.kind =>
+                {
+                    assert_eq!(*message, format!("Error creating {name} instance"));
                     assert!(
-                        matches!(&*cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m ==
+                        matches!(&cause.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m ==
                             "The FSDirectory implementation must not be null or empty"),
                         "{cause:?}"
                     );
@@ -744,13 +734,14 @@ mod tests {
                 ),
             }
             match CommandLineUtil::load_fs_directory_class(name) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { message, .. },
-                    ..
-                }) => assert_eq!(
-                    message,
-                    "The FSDirectory implementation must not be null or empty"
-                ),
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+                {
+                    assert_eq!(
+                        message,
+                        "The FSDirectory implementation must not be null or empty"
+                    )
+                }
                 other => panic!("expected IllegalArgumentException for {name:?}, got {other:?}"),
             }
         }
@@ -795,17 +786,15 @@ mod tests {
             );
         }
         let other = |result: Result<String>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Other(message),
-                ..
-            }) => message,
+            Err(ref __lerr) if let LuceneErrorKind::Other(message) = &__lerr.kind => {
+                message.clone()
+            }
             other => panic!("{other:?}"),
         };
         let other_fs = |result: Result<FSDirectoryKind>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Other(message),
-                ..
-            }) => message,
+            Err(ref __lerr) if let LuceneErrorKind::Other(message) = &__lerr.kind => {
+                message.clone()
+            }
             other => panic!("{other:?}"),
         };
         for (name, message) in [
@@ -844,11 +833,9 @@ mod tests {
                 "{name:?}"
             );
         }
-        assert!(matches!(
-            CommandLineUtil::load_directory_class(" "),
-            Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. })
-                if m == "The FSDirectory implementation must not be null or empty"
-        ));
+        assert!(
+            matches!(CommandLineUtil::load_directory_class(" "), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "The FSDirectory implementation must not be null or empty"))
+        );
     }
 
     #[test]
@@ -859,25 +846,22 @@ mod tests {
         // `ClassNotFoundException(name)`, the name adjusted (`PassAOracle`,
         // section 5).
         let refusal = |name: &str| match CommandLineUtil::new_fs_directory(name, &target) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 let adjusted = CommandLineUtil::adjust_directory_class_name(name).unwrap();
-                match &*cause {
-                    LuceneError {
-                        kind: LuceneErrorKind::Other(m),
-                        ..
-                    } if *m == adjusted
-                        || *m == format!("class {adjusted}")
-                        || *m == format!("interface {adjusted}") => {}
+                match &**cause {
+                    __lerr
+                        if let LuceneErrorKind::Other(m) = &__lerr.kind
+                            && (*m == adjusted
+                                || *m == format!("class {adjusted}")
+                                || *m == format!("interface {adjusted}")) => {}
                     other => panic!("unexpected cause for {name}: {other:?}"),
                 }
-                message
+                message.clone()
             }
             other => panic!(
                 "expected IllegalArgumentException for {name}, got {:?}",
@@ -885,13 +869,13 @@ mod tests {
             ),
         };
         let cause = |name: &str| match CommandLineUtil::new_fs_directory(name, &target) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        cause: Some(cause), ..
-                    },
-                ..
-            }) => cause.to_string(),
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument {
+                    cause: Some(cause), ..
+                } = &__lerr.kind =>
+            {
+                cause.to_string()
+            }
             other => panic!("expected a cause for {name}, got {:?}", other.err()),
         };
         assert_eq!(

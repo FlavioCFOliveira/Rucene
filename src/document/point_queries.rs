@@ -13,10 +13,11 @@
 //! As in [`spatial_query`](crate::document::spatial_query), these types stop
 //! one step short of `Query`/`Weight`/`Scorer` and expose the
 //! [`DocIdSetIterator`] a `ConstantScoreScorer` would have wrapped. The three
-//! doc-values queries additionally collapse Java's `TwoPhaseIterator` into a
-//! single filtering iterator: the same documents are produced, in the same
-//! order, but a consumer cannot defer the per-document check.
+//! doc-values queries build Java's `TwoPhaseIterator` over the sorted-numeric
+//! values, and their scorers expose it; their `matching_docs` is that
+//! iterator's `TwoPhaseIterator.asDocIdSetIterator` view.
 
+use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use crate::document::geo_fields::{LatLonPoint, XYPointField};
@@ -31,9 +32,12 @@ use crate::geo::encoding::{
     Component2DPredicate, DistancePredicate, GeoEncodingUtils, GeoUtils, XYEncodingUtils,
 };
 use crate::geo::Component2D;
-use crate::index::point_values::{IntersectVisitor, Relation};
+use crate::index::point_values::{IntersectVisitor, PointValues, Relation};
 use crate::index::{LeafReader, SortedNumericDocValues};
-use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
+use crate::search::{
+    ConstantScoreScorer, DefaultScorerSupplier, DocIdSetIterator, Scorer, ScorerSupplier,
+    TwoPhaseIterator, TwoPhaseIteratorAsDocIdSetIterator, NO_MORE_DOCS,
+};
 use crate::search::{IndexSearcher, Query, QueryVisitor, ScoreMode, Weight};
 use crate::util::doc_id_set::DocIdSetBuilder;
 use crate::util::{IntsRef, NumericUtils};
@@ -302,44 +306,53 @@ trait SortedNumericMatcher: std::fmt::Debug {
     fn matches(&self, values: &mut dyn SortedNumericDocValues) -> Result<bool>;
 }
 
-/// Filters a `SortedNumericDocValues` iterator down to the matching documents.
-///
-/// See the module divergence note.
-struct SortedNumericMatchIterator {
+/// The anonymous `TwoPhaseIterator` each doc-values query builds over the
+/// field's sorted-numeric values: the values are the approximation, the
+/// matcher is `matches()` and `match_cost` is `matchCost()`
+/// (`LatLonDocValuesBoxQuery.java:121-155`, `LatLonDocValuesQuery.java:173-271`,
+/// `XYDocValuesPointInGeometryQuery.java:112-132`).
+struct SortedNumericTwoPhaseIterator {
     values: Box<dyn SortedNumericDocValues>,
     matcher: Box<dyn SortedNumericMatcher>,
+    match_cost: f32,
 }
 
-impl SortedNumericMatchIterator {
-    fn confirm(&mut self, mut doc: i32) -> Result<i32> {
-        while doc != NO_MORE_DOCS {
-            if self.matcher.matches(self.values.as_mut())? {
-                return Ok(doc);
-            }
-            doc = self.values.next_doc()?;
-        }
-        Ok(NO_MORE_DOCS)
+impl TwoPhaseIterator for SortedNumericTwoPhaseIterator {
+    fn approximation(&mut self) -> &mut dyn DocIdSetIterator {
+        self.values.as_mut()
+    }
+
+    fn approximation_ref(&self) -> &dyn DocIdSetIterator {
+        self.values.as_ref()
+    }
+
+    fn matches(&mut self) -> Result<bool> {
+        self.matcher.matches(self.values.as_mut())
+    }
+
+    fn match_cost(&self) -> f32 {
+        self.match_cost
     }
 }
 
-impl DocIdSetIterator for SortedNumericMatchIterator {
-    fn doc_id(&self) -> i32 {
-        self.values.doc_id()
-    }
+/// `TwoPhaseIterator.asDocIdSetIterator(iterator)`, the documents a two-phase
+/// iterator confirms.
+fn as_doc_id_set_iterator(two_phase: SortedNumericTwoPhaseIterator) -> Box<dyn DocIdSetIterator> {
+    Box::new(TwoPhaseIteratorAsDocIdSetIterator::new(Box::new(two_phase)))
+}
 
-    fn next_doc(&mut self) -> Result<i32> {
-        let doc = self.values.next_doc()?;
-        self.confirm(doc)
-    }
-
-    fn advance(&mut self, target: i32) -> Result<i32> {
-        let doc = self.values.advance(target)?;
-        self.confirm(doc)
-    }
-
-    fn cost(&self) -> i64 {
-        self.values.cost()
-    }
+/// The scorer supplier of the `ConstantScoreWeight` each doc-values query
+/// builds: `new DefaultScorerSupplier(new ConstantScoreScorer(boost,
+/// scoreMode, iterator))` (`LatLonDocValuesBoxQuery.java:156-157`,
+/// `LatLonDocValuesQuery.java:161-162`,
+/// `XYDocValuesPointInGeometryQuery.java:133-134`).
+fn two_phase_scorer_supplier(
+    two_phase: SortedNumericTwoPhaseIterator,
+    score_mode: ScoreMode,
+    boost: f32,
+) -> Box<dyn ScorerSupplier> {
+    let scorer = ConstantScoreScorer::from_two_phase(boost, score_mode, Box::new(two_phase));
+    Box::new(DefaultScorerSupplier::new(Box::new(scorer)))
 }
 
 /// Splits one packed location value into its two encoded coordinates.
@@ -526,11 +539,40 @@ impl LatLonDocValuesQuery {
         1000.0
     }
 
-    /// Returns the documents of `reader` this query matches.
+    /// Builds the two-phase iterator over `values` for the query relation.
     ///
-    /// Equivalent to the `ScorerSupplier` of the `ConstantScoreWeight`
-    /// `LatLonDocValuesQuery.createWeight` builds; see the module divergence
-    /// note.
+    /// Equivalent to the `switch (queryRelation)` of the `scorerSupplier`
+    /// `LatLonDocValuesQuery.createWeight` builds
+    /// (`LatLonDocValuesQuery.java:143-160`), over the private `intersects`,
+    /// `within`, `disjoint` and `contains` factories.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever building the `CONTAINS` components raises.
+    fn two_phase_iterator(
+        &self,
+        values: Box<dyn SortedNumericDocValues>,
+    ) -> Result<SortedNumericTwoPhaseIterator> {
+        let mut contains_components = Vec::new();
+        if self.query_relation == QueryRelation::Contains {
+            for geometry in &self.geometries {
+                contains_components.push(geometry.to_component2d()?);
+            }
+        }
+        Ok(SortedNumericTwoPhaseIterator {
+            values,
+            matcher: Box::new(LatLonDocValuesMatcher {
+                query_relation: self.query_relation,
+                component2d: Arc::clone(&self.component2d),
+                contains_components,
+            }),
+            match_cost: self.match_cost(),
+        })
+    }
+
+    /// Returns the documents of `reader` this query matches: the
+    /// `TwoPhaseIterator.asDocIdSetIterator` view of the two-phase iterator
+    /// the query's scorer exposes.
     ///
     /// # Errors
     ///
@@ -542,20 +584,33 @@ impl LatLonDocValuesQuery {
         let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
             return Ok(None);
         };
-        let mut contains_components = Vec::new();
-        if self.query_relation == QueryRelation::Contains {
-            for geometry in &self.geometries {
-                contains_components.push(geometry.to_component2d()?);
-            }
-        }
-        Ok(Some(Box::new(SortedNumericMatchIterator {
-            values,
-            matcher: Box::new(LatLonDocValuesMatcher {
-                query_relation: self.query_relation,
-                component2d: Arc::clone(&self.component2d),
-                contains_components,
-            }),
-        })))
+        Ok(Some(as_doc_id_set_iterator(
+            self.two_phase_iterator(values)?,
+        )))
+    }
+
+    /// Equivalent to `scorerSupplier(LeafReaderContext)` of the
+    /// `ConstantScoreWeight` `LatLonDocValuesQuery.createWeight` builds
+    /// (`LatLonDocValuesQuery.java:137-163`): `None` when the leaf has no
+    /// values for the field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
+            return Ok(None);
+        };
+        Ok(Some(two_phase_scorer_supplier(
+            self.two_phase_iterator(values)?,
+            score_mode,
+            boost,
+        )))
     }
 
     /// Prints this query, omitting `field` when it is the default one.
@@ -687,9 +742,29 @@ impl LatLonDocValuesBoxQuery {
         5.0
     }
 
-    /// Returns the documents of `reader` this query matches.
-    ///
-    /// See the module divergence note.
+    /// Builds the anonymous two-phase iterator of the `scorerSupplier`
+    /// `LatLonDocValuesBoxQuery.createWeight` builds
+    /// (`LatLonDocValuesBoxQuery.java:121-155`).
+    fn two_phase_iterator(
+        &self,
+        values: Box<dyn SortedNumericDocValues>,
+    ) -> SortedNumericTwoPhaseIterator {
+        SortedNumericTwoPhaseIterator {
+            values,
+            matcher: Box::new(LatLonBoxMatcher {
+                min_latitude: self.matcher_min_latitude,
+                max_latitude: self.matcher_max_latitude,
+                min_longitude: self.matcher_min_longitude,
+                max_longitude: self.matcher_max_longitude,
+                crosses_dateline: self.crosses_dateline,
+            }),
+            match_cost: self.match_cost(),
+        }
+    }
+
+    /// Returns the documents of `reader` this query matches: the
+    /// `TwoPhaseIterator.asDocIdSetIterator` view of the two-phase iterator
+    /// the query's scorer exposes.
     ///
     /// # Errors
     ///
@@ -701,16 +776,33 @@ impl LatLonDocValuesBoxQuery {
         let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(SortedNumericMatchIterator {
-            values,
-            matcher: Box::new(LatLonBoxMatcher {
-                min_latitude: self.matcher_min_latitude,
-                max_latitude: self.matcher_max_latitude,
-                min_longitude: self.matcher_min_longitude,
-                max_longitude: self.matcher_max_longitude,
-                crosses_dateline: self.crosses_dateline,
-            }),
-        })))
+        Ok(Some(as_doc_id_set_iterator(
+            self.two_phase_iterator(values),
+        )))
+    }
+
+    /// Equivalent to `scorerSupplier(LeafReaderContext)` of the
+    /// `ConstantScoreWeight` `LatLonDocValuesBoxQuery.createWeight` builds
+    /// (`LatLonDocValuesBoxQuery.java:114-158`): `None` when the leaf has no
+    /// values for the field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
+            return Ok(None);
+        };
+        Ok(Some(two_phase_scorer_supplier(
+            self.two_phase_iterator(values),
+            score_mode,
+            boost,
+        )))
     }
 
     /// Prints this query, omitting `field` when it is the default one.
@@ -812,9 +904,25 @@ impl XYDocValuesPointInGeometryQuery {
         1000.0
     }
 
-    /// Returns the documents of `reader` this query matches.
-    ///
-    /// See the module divergence note.
+    /// Builds the anonymous two-phase iterator of the `scorerSupplier`
+    /// `XYDocValuesPointInGeometryQuery.createWeight` builds
+    /// (`XYDocValuesPointInGeometryQuery.java:112-132`).
+    fn two_phase_iterator(
+        &self,
+        values: Box<dyn SortedNumericDocValues>,
+    ) -> SortedNumericTwoPhaseIterator {
+        SortedNumericTwoPhaseIterator {
+            values,
+            matcher: Box::new(XYDocValuesMatcher {
+                component2d: Arc::clone(&self.component2d),
+            }),
+            match_cost: self.match_cost(),
+        }
+    }
+
+    /// Returns the documents of `reader` this query matches: the
+    /// `TwoPhaseIterator.asDocIdSetIterator` view of the two-phase iterator
+    /// the query's scorer exposes.
     ///
     /// # Errors
     ///
@@ -826,12 +934,33 @@ impl XYDocValuesPointInGeometryQuery {
         let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
             return Ok(None);
         };
-        Ok(Some(Box::new(SortedNumericMatchIterator {
-            values,
-            matcher: Box::new(XYDocValuesMatcher {
-                component2d: Arc::clone(&self.component2d),
-            }),
-        })))
+        Ok(Some(as_doc_id_set_iterator(
+            self.two_phase_iterator(values),
+        )))
+    }
+
+    /// Equivalent to `scorerSupplier(LeafReaderContext)` of the
+    /// `ConstantScoreWeight` `XYDocValuesPointInGeometryQuery.createWeight`
+    /// builds (`XYDocValuesPointInGeometryQuery.java:105-135`): `None` when
+    /// the leaf has no values for the field.
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever reading the doc values raises.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Box<dyn ScorerSupplier>>> {
+        let Some(values) = reader.get_sorted_numeric_doc_values(&self.field)? else {
+            return Ok(None);
+        };
+        Ok(Some(two_phase_scorer_supplier(
+            self.two_phase_iterator(values),
+            score_mode,
+            boost,
+        )))
     }
 
     /// Prints this query, omitting `field` when it is the default one.
@@ -995,11 +1124,8 @@ impl XYPointInGeometryQuery {
         self.xy_geometries.clone()
     }
 
-    /// Returns the documents of `reader` this query matches.
-    ///
-    /// Equivalent to the `ScorerSupplier` of the `ConstantScoreWeight`
-    /// `XYPointInGeometryQuery.createWeight` builds; see the module divergence
-    /// note.
+    /// Returns the documents of `reader` this query matches: the iterator the
+    /// scorer of [`scorer_supplier`](Self::scorer_supplier)'s `get` wraps.
     ///
     /// # Errors
     ///
@@ -1010,23 +1136,51 @@ impl XYPointInGeometryQuery {
         &self,
         reader: &dyn LeafReader,
     ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        match self.scorer_supplier(reader, 0.0, ScoreMode::COMPLETE_NO_SCORES)? {
+            Some(mut supplier) => Ok(Some(supplier.iterator()?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Equivalent to `scorerSupplier(LeafReaderContext)` of the
+    /// `ConstantScoreWeight` `XYPointInGeometryQuery.createWeight` builds
+    /// (`XYPointInGeometryQuery.java:136-176`): `None` when the leaf has no
+    /// points or no field info for the field; otherwise the supplier, which
+    /// intersects the tree only in `get` and estimates its cost lazily.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
+    /// an incompatible point type, and propagates whatever opening the points
+    /// raises.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Option<XYPointInGeometryScorerSupplier>> {
         let Some(values) = reader.get_point_values(&self.field)? else {
-            // No document in this segment has any point for this field.
+            // No docs in this segment had any points fields
             return Ok(None);
         };
         let field_infos = reader.get_field_infos();
         let Some(field_info) = field_infos.field_info(&self.field) else {
-            // No document in this segment indexed this field at all.
+            // No docs in this segment indexed this field at all
             return Ok(None);
         };
         XYPointField::check_compatible(field_info)?;
 
-        let mut result = DocIdSetBuilder::from_point_values(reader.max_doc(), values.as_ref())?;
-        {
-            let mut visitor = Self::get_intersect_visitor(&mut result, self.tree.as_ref());
-            values.intersect(&mut visitor)?;
-        }
-        Ok(Some(result.build()?.iterator()?))
+        let max_doc = reader.max_doc();
+        let result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
+        Ok(Some(XYPointInGeometryScorerSupplier {
+            tree: Arc::clone(&self.tree),
+            values,
+            max_doc,
+            result: RefCell::new(Some(result)),
+            cost: Cell::new(-1),
+            score,
+            score_mode,
+        }))
     }
 
     /// Builds the visitor that collects the points falling inside `tree`.
@@ -1074,6 +1228,109 @@ impl XYPointInGeometryQuery {
     }
 }
 
+/// The anonymous `ScorerSupplier` of the weight
+/// `XYPointInGeometryQuery.createWeight` builds
+/// (`XYPointInGeometryQuery.java:151-175`).
+///
+/// The tree is intersected only in [`get`](ScorerSupplier::get); `cost()`
+/// estimates with the same visitor, without intersecting, and memoises the
+/// estimate in `cost` (`-1` until computed), as Java's `long cost = -1` field.
+/// The visitor's `DocIdSetBuilder result` sits in a `RefCell` because `cost()`
+/// takes `&self` and the visitor holds the builder by `&mut`; the estimate
+/// never adds to it.
+struct XYPointInGeometryScorerSupplier {
+    tree: Arc<dyn Component2D>,
+    values: Box<dyn PointValues>,
+    max_doc: i32,
+    /// `final DocIdSetBuilder result = new DocIdSetBuilder(reader.maxDoc(),
+    /// values)`; `None` once `get` has built it.
+    result: RefCell<Option<DocIdSetBuilder>>,
+    cost: Cell<i64>,
+    score: f32,
+    score_mode: ScoreMode,
+}
+
+impl std::fmt::Debug for XYPointInGeometryScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("XYPointInGeometryScorerSupplier")
+            .field("max_doc", &self.max_doc)
+            .field("cost", &self.cost.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl XYPointInGeometryScorerSupplier {
+    /// `values.estimateDocCount(visitor)`, with the visitor over `result`.
+    fn estimate_doc_count(&self) -> Result<i64> {
+        let mut result = self.result.borrow_mut();
+        let mut built;
+        let result = match result.as_mut() {
+            Some(result) => result,
+            // `get` already consumed the builder; the estimate only calls
+            // `compare`, so a fresh builder stands for it.
+            None => {
+                built = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
+                &mut built
+            }
+        };
+        let mut visitor = XYPointInGeometryQuery::get_intersect_visitor(result, self.tree.as_ref());
+        self.values.estimate_doc_count(&mut visitor)
+    }
+
+    /// The iterator `get(long)` wraps in its `ConstantScoreScorer`
+    /// (`XYPointInGeometryQuery.java:157-161`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the point tree raises; a second call is refused
+    /// with [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState),
+    /// as `ScorerSupplier.get` may be called at most once.
+    fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
+        let mut result = self.result.get_mut().take().ok_or_else(|| {
+            LuceneError::illegal_state(
+                "ScorerSupplier.get(long) must be called at most once".to_string(),
+            )
+        })?;
+        {
+            let mut visitor =
+                XYPointInGeometryQuery::get_intersect_visitor(&mut result, self.tree.as_ref());
+            self.values.intersect(&mut visitor)?;
+        }
+        result.build()?.iterator()
+    }
+}
+
+impl ScorerSupplier for XYPointInGeometryScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let iterator = self.iterator()?;
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
+    }
+
+    /// `if (cost == -1) cost = values.estimateDocCount(visitor)`
+    /// (`XYPointInGeometryQuery.java:163-172`).
+    ///
+    /// # Panics
+    ///
+    /// Java's `estimateDocCount` rethrows an `IOException` as the unchecked
+    /// `UncheckedIOException`, which `cost()` lets propagate; this port
+    /// raises the error the estimate returns as a panic payload.
+    fn cost(&self) -> i64 {
+        if self.cost.get() == -1 {
+            // Computing the cost may be expensive, so only do it if necessary
+            let cost = self
+                .estimate_doc_count()
+                .unwrap_or_else(|e| std::panic::panic_any(e));
+            debug_assert!(cost >= 0);
+            self.cost.set(cost);
+        }
+        self.cost.get()
+    }
+}
+
 impl PartialEq for XYPointInGeometryQuery {
     /// Equivalent to the private `XYPointInGeometryQuery.equalsTo`.
     fn eq(&self, other: &Self) -> bool {
@@ -1095,6 +1352,20 @@ impl SpatialMatcher for XYPointInGeometryQuery {
 
     fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
         self.cost(reader)
+    }
+
+    /// The query's own `ConstantScoreWeight.scorerSupplier`, whose supplier
+    /// intersects lazily. Its `score()` is the boost `createWeight` received,
+    /// the constant score of the enclosing weight.
+    fn spatial_scorer_supplier_override(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Option<Box<dyn ScorerSupplier>>>> {
+        Ok(Some(self.scorer_supplier(reader, boost, score_mode)?.map(
+            |supplier| Box::new(supplier) as Box<dyn ScorerSupplier>,
+        )))
     }
 }
 
@@ -1517,11 +1788,8 @@ impl LatLonPointDistanceQuery {
         self.radius_meters
     }
 
-    /// Returns the documents of `reader` this query matches.
-    ///
-    /// Equivalent to the `ScorerSupplier.get(long)` of the weight
-    /// `LatLonPointDistanceQuery.createWeight` builds; see the module
-    /// divergence note.
+    /// Returns the documents of `reader` this query matches: the iterator the
+    /// scorer of [`scorer_supplier`](Self::scorer_supplier)'s `get` wraps.
     ///
     /// # Errors
     ///
@@ -1532,48 +1800,52 @@ impl LatLonPointDistanceQuery {
         &self,
         reader: &dyn LeafReader,
     ) -> Result<Option<Box<dyn DocIdSetIterator>>> {
+        match self.scorer_supplier(reader, 0.0, ScoreMode::COMPLETE_NO_SCORES)? {
+            Some(mut supplier) => Ok(Some(supplier.iterator()?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Equivalent to `scorerSupplier(LeafReaderContext)` of the
+    /// `ConstantScoreWeight` `LatLonPointDistanceQuery.createWeight` builds
+    /// (`LatLonPointDistanceQuery.java:122-173`): `None` when the leaf has no
+    /// points or no field info for the field; otherwise the supplier, which
+    /// intersects the tree only in `get` and estimates its cost lazily.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) when the field was indexed with
+    /// an incompatible point type, and propagates whatever opening the points
+    /// raises.
+    fn scorer_supplier(
+        &self,
+        reader: &dyn LeafReader,
+        score: f32,
+        score_mode: ScoreMode,
+    ) -> Result<Option<LatLonPointDistanceScorerSupplier>> {
         let Some(values) = reader.get_point_values(&self.field)? else {
-            // No document in this segment has any point for this field.
+            // No docs in this segment had any points fields
             return Ok(None);
         };
         let field_infos = reader.get_field_infos();
         let Some(field_info) = field_infos.field_info(&self.field) else {
-            // No document in this segment indexed this field at all.
+            // No docs in this segment indexed this field at all
             return Ok(None);
         };
         LatLonPoint::check_compatible(field_info)?;
 
+        // matching docids
         let max_doc = reader.max_doc();
-        if values.doc_count()? == max_doc
-            && i64::from(values.doc_count()?) == values.size()?
-            && self.cost(reader)? > i64::from(max_doc) / 2
-        {
-            // Every document has exactly one value and the cost is more than
-            // half the leaf, so computing the complement may be faster.
-            let mut result = crate::util::FixedBitSet::new(max_doc as usize);
-            result.set_range(0, max_doc as usize);
-            let mut cost = i64::from(max_doc);
-            let mut inverse = InverseDistanceIntersectVisitor {
-                bounds: self.bounds.clone(),
-                result: &mut result,
-                cost: &mut cost,
-            };
-            values.intersect(&mut inverse)?;
-            return Ok(Some(Box::new(crate::util::BitSetIterator::new(
-                Arc::new(result),
-                cost,
-            )?)));
-        }
-
-        let mut result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
-        {
-            let mut visitor = DistanceIntersectVisitor {
-                bounds: self.bounds.clone(),
-                result: &mut result,
-            };
-            values.intersect(&mut visitor)?;
-        }
-        Ok(Some(result.build()?.iterator()?))
+        let result = DocIdSetBuilder::from_point_values(max_doc, values.as_ref())?;
+        Ok(Some(LatLonPointDistanceScorerSupplier {
+            bounds: self.bounds.clone(),
+            values,
+            max_doc,
+            result: RefCell::new(Some(result)),
+            cost: Cell::new(-1),
+            score,
+            score_mode,
+        }))
     }
 
     /// Returns the estimated number of documents this query matches in
@@ -1629,6 +1901,135 @@ impl PartialEq for LatLonPointDistanceQuery {
     }
 }
 
+/// The anonymous `ScorerSupplier` of the weight
+/// `LatLonPointDistanceQuery.createWeight` builds
+/// (`LatLonPointDistanceQuery.java:141-172`).
+///
+/// The tree is intersected only in [`get`](ScorerSupplier::get); `cost()`
+/// estimates with the same visitor, without intersecting, and memoises the
+/// estimate in `cost` (`-1` until computed), as Java's `long cost = -1` field.
+/// The visitor's `DocIdSetBuilder result` sits in a `RefCell` because `cost()`
+/// takes `&self` and the visitor holds the builder by `&mut`; the estimate
+/// never adds to it.
+struct LatLonPointDistanceScorerSupplier {
+    bounds: LatLonDistanceBounds,
+    values: Box<dyn PointValues>,
+    max_doc: i32,
+    /// `DocIdSetBuilder result = new DocIdSetBuilder(reader.maxDoc(), values)`;
+    /// `None` once `get` has built it.
+    result: RefCell<Option<DocIdSetBuilder>>,
+    cost: Cell<i64>,
+    score: f32,
+    score_mode: ScoreMode,
+}
+
+impl std::fmt::Debug for LatLonPointDistanceScorerSupplier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LatLonPointDistanceScorerSupplier")
+            .field("max_doc", &self.max_doc)
+            .field("cost", &self.cost.get())
+            .finish_non_exhaustive()
+    }
+}
+
+impl LatLonPointDistanceScorerSupplier {
+    /// `values.estimateDocCount(visitor)`, with the visitor over `result`.
+    fn estimate_doc_count(&self) -> Result<i64> {
+        let mut result = self.result.borrow_mut();
+        let mut built;
+        let result = match result.as_mut() {
+            Some(result) => result,
+            // `get` already consumed the builder; the estimate only calls
+            // `compare`, so a fresh builder stands for it.
+            None => {
+                built = DocIdSetBuilder::from_point_values(self.max_doc, self.values.as_ref())?;
+                &mut built
+            }
+        };
+        let mut visitor = DistanceIntersectVisitor {
+            bounds: self.bounds.clone(),
+            result,
+        };
+        self.values.estimate_doc_count(&mut visitor)
+    }
+
+    /// The iterator `get(long)` wraps in its `ConstantScoreScorer`
+    /// (`LatLonPointDistanceQuery.java:145-162`).
+    ///
+    /// # Errors
+    ///
+    /// Propagates whatever the point tree raises; a second call is refused
+    /// with [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState),
+    /// as `ScorerSupplier.get` may be called at most once.
+    fn iterator(&mut self) -> Result<Box<dyn DocIdSetIterator>> {
+        let max_doc = self.max_doc;
+        if self.values.doc_count()? == max_doc
+            && i64::from(self.values.doc_count()?) == self.values.size()?
+            && ScorerSupplier::cost(self) > i64::from(max_doc / 2)
+        {
+            // If all docs have exactly one value and the cost is greater
+            // than half the leaf size then maybe we can make things faster
+            // by computing the set of documents that do NOT match the range
+            let mut result = crate::util::FixedBitSet::new(max_doc as usize);
+            result.set_range(0, max_doc as usize);
+            let mut cost = i64::from(max_doc);
+            let mut inverse = InverseDistanceIntersectVisitor {
+                bounds: self.bounds.clone(),
+                result: &mut result,
+                cost: &mut cost,
+            };
+            self.values.intersect(&mut inverse)?;
+            return Ok(Box::new(crate::util::BitSetIterator::new(
+                Arc::new(result),
+                cost,
+            )?));
+        }
+        let mut result = self.result.get_mut().take().ok_or_else(|| {
+            LuceneError::illegal_state(
+                "ScorerSupplier.get(long) must be called at most once".to_string(),
+            )
+        })?;
+        {
+            let mut visitor = DistanceIntersectVisitor {
+                bounds: self.bounds.clone(),
+                result: &mut result,
+            };
+            self.values.intersect(&mut visitor)?;
+        }
+        result.build()?.iterator()
+    }
+}
+
+impl ScorerSupplier for LatLonPointDistanceScorerSupplier {
+    fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        let iterator = self.iterator()?;
+        Ok(Box::new(ConstantScoreScorer::from_iterator(
+            self.score,
+            self.score_mode,
+            iterator,
+        )))
+    }
+
+    /// `if (cost == -1) cost = values.estimateDocCount(visitor)`
+    /// (`LatLonPointDistanceQuery.java:164-171`).
+    ///
+    /// # Panics
+    ///
+    /// Java's `estimateDocCount` rethrows an `IOException` as the unchecked
+    /// `UncheckedIOException`, which `cost()` lets propagate; this port
+    /// raises the error the estimate returns as a panic payload.
+    fn cost(&self) -> i64 {
+        if self.cost.get() == -1 {
+            let cost = self
+                .estimate_doc_count()
+                .unwrap_or_else(|e| std::panic::panic_any(e));
+            self.cost.set(cost);
+        }
+        debug_assert!(self.cost.get() >= 0);
+        self.cost.get()
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Executing the point queries
 // -----------------------------------------------------------------------------
@@ -1655,6 +2056,12 @@ impl SpatialMatcher for LatLonPointQuery {
             return Ok(0);
         };
         self.query.cost(values.as_ref(), &self.visitor)
+    }
+
+    /// `LatLonPointQuery extends SpatialQuery` and keeps its
+    /// `getScorerSupplier`.
+    fn spatial_query(&self) -> Option<(&SpatialQuery, &dyn SpatialVisitor)> {
+        Some((&self.query, &self.visitor))
     }
 }
 
@@ -1732,6 +2139,20 @@ impl SpatialMatcher for LatLonPointDistanceQuery {
     fn spatial_cost(&self, reader: &dyn LeafReader) -> Result<i64> {
         self.cost(reader)
     }
+
+    /// The query's own `ConstantScoreWeight.scorerSupplier`, whose supplier
+    /// intersects lazily. Its `score()` is the boost `createWeight` received,
+    /// the constant score of the enclosing weight.
+    fn spatial_scorer_supplier_override(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Option<Box<dyn ScorerSupplier>>>> {
+        Ok(Some(self.scorer_supplier(reader, boost, score_mode)?.map(
+            |supplier| Box::new(supplier) as Box<dyn ScorerSupplier>,
+        )))
+    }
 }
 
 impl Query for LatLonPointDistanceQuery {
@@ -1798,9 +2219,10 @@ impl Query for LatLonPointDistanceQuery {
 //
 // Java's three doc-values queries each extend Query and supply a
 // ConstantScoreWeight whose scorer wraps a TwoPhaseIterator over the field's
-// sorted-numeric values. Rust has no implementation inheritance, so each states
-// how it iterates through SpatialMatcher and the weight is built once by
-// `spatial_create_weight`, exactly as the point queries above do.
+// sorted-numeric values. Rust has no implementation inheritance, so each
+// supplies that scorer through
+// `SpatialMatcher::spatial_scorer_supplier_override` and the weight is built
+// once by `spatial_create_weight`.
 
 impl SpatialMatcher for LatLonDocValuesBoxQuery {
     fn spatial_field(&self) -> &str {
@@ -1818,6 +2240,22 @@ impl SpatialMatcher for LatLonDocValuesBoxQuery {
         Ok(reader
             .get_sorted_numeric_doc_values(&self.field)?
             .map_or(0, |values| values.cost()))
+    }
+
+    /// The query's own `ConstantScoreWeight.scorerSupplier`, which scores
+    /// through the two-phase iterator.
+    fn spatial_scorer_supplier_override(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Option<Box<dyn ScorerSupplier>>>> {
+        Ok(Some(self.scorer_supplier(reader, score_mode, boost)?))
+    }
+
+    /// `DocValues.isCacheable(ctx, field)` (`LatLonDocValuesBoxQuery.java:160-163`).
+    fn spatial_is_cacheable(&self, ctx: &crate::index::LeafReaderContext) -> bool {
+        crate::index::DocValues::is_cacheable(ctx, &[&self.field])
     }
 }
 
@@ -1900,6 +2338,22 @@ impl SpatialMatcher for LatLonDocValuesQuery {
             .get_sorted_numeric_doc_values(&self.field)?
             .map_or(0, |values| values.cost()))
     }
+
+    /// The query's own `ConstantScoreWeight.scorerSupplier`, which scores
+    /// through the two-phase iterator.
+    fn spatial_scorer_supplier_override(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Option<Box<dyn ScorerSupplier>>>> {
+        Ok(Some(self.scorer_supplier(reader, score_mode, boost)?))
+    }
+
+    /// `DocValues.isCacheable(ctx, field)` (`LatLonDocValuesQuery.java:165-168`).
+    fn spatial_is_cacheable(&self, ctx: &crate::index::LeafReaderContext) -> bool {
+        crate::index::DocValues::is_cacheable(ctx, &[&self.field])
+    }
 }
 
 impl Query for LatLonDocValuesQuery {
@@ -1973,6 +2427,22 @@ impl SpatialMatcher for XYDocValuesPointInGeometryQuery {
         Ok(reader
             .get_sorted_numeric_doc_values(&self.field)?
             .map_or(0, |values| values.cost()))
+    }
+
+    /// The query's own `ConstantScoreWeight.scorerSupplier`, which scores
+    /// through the two-phase iterator.
+    fn spatial_scorer_supplier_override(
+        &self,
+        reader: &dyn LeafReader,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Option<Option<Box<dyn ScorerSupplier>>>> {
+        Ok(Some(self.scorer_supplier(reader, score_mode, boost)?))
+    }
+
+    /// `DocValues.isCacheable(ctx, field)` (`XYDocValuesPointInGeometryQuery.java:137-140`).
+    fn spatial_is_cacheable(&self, ctx: &crate::index::LeafReaderContext) -> bool {
+        crate::index::DocValues::is_cacheable(ctx, &[&self.field])
     }
 }
 
@@ -2099,5 +2569,447 @@ mod xy_point_in_geometry_query_tests {
     fn empty_geometry_list_is_refused() {
         // Java throws IllegalArgumentException("geometries must not be empty").
         assert!(XYPointInGeometryQuery::new("xy", Vec::new()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod scorer_supplier_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::geo_fields::{LatLonDocValuesField, XYDocValuesField};
+    use crate::document::Document;
+    use crate::geo::geometry::{Rectangle, XYRectangle};
+    use crate::index::doc_values::{
+        BinaryDocValues, DocValuesSkipper, NumericDocValues, SortedDocValues, SortedSetDocValues,
+    };
+    use crate::index::index_reader::{CacheHelper, IndexReaderCore, StoredFields};
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::index::leaf_reader::{LeafMetaData, TermVectors};
+    use crate::index::point_values::PointValues;
+    use crate::index::vector_values::{ByteVectorValues, FloatVectorValues};
+    use crate::index::{directory_reader, FieldInfos, IndexReader, LeafReaderContext, Terms};
+    use crate::search::knn::KnnCollector;
+    use crate::search::AcceptDocs;
+    use crate::store::{ByteBuffersDirectory, Directory};
+    use crate::util::Bits;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Document `i` of the test index sits at latitude = longitude =
+    /// `i * 0.1 - 10` and at `x = y = i`.
+    fn coordinate(i: i32) -> f64 {
+        f64::from(i) * 0.1 - 10.0
+    }
+
+    /// 200 documents, one segment, each with one point and one doc value of
+    /// both kinds.
+    fn index() -> Arc<dyn IndexReader> {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for i in 0..200 {
+            let mut doc = Document::new();
+            doc.add(LatLonPoint::new("ll", coordinate(i), coordinate(i)).unwrap());
+            doc.add(XYPointField::new("xy", i as f32, i as f32).unwrap());
+            doc.add(LatLonDocValuesField::new("lld", coordinate(i), coordinate(i)).unwrap());
+            doc.add(XYDocValuesField::new("xyd", i as f32, i as f32).unwrap());
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        directory_reader::open(dir).unwrap()
+    }
+
+    /// Every document the iterator yields.
+    fn docs(iterator: &mut dyn DocIdSetIterator) -> Vec<i32> {
+        let mut docs = Vec::new();
+        loop {
+            let doc = iterator.next_doc().unwrap();
+            if doc == NO_MORE_DOCS {
+                return docs;
+            }
+            docs.push(doc);
+        }
+    }
+
+    /// Regression for rmp #665: the scorers of `LatLonDocValuesBoxQuery`,
+    /// `LatLonDocValuesQuery` and `XYDocValuesPointInGeometryQuery` are
+    /// `ConstantScoreScorer`s over a `TwoPhaseIterator`, with Lucene's match
+    /// costs (`LatLonDocValuesBoxQuery.java:152-154`,
+    /// `LatLonDocValuesQuery.java:212-214`,
+    /// `XYDocValuesPointInGeometryQuery.java:129-131`), and still match the
+    /// same documents.
+    #[test]
+    fn doc_values_point_queries_expose_a_two_phase_iterator() {
+        let reader = index();
+        let searcher = IndexSearcher::new(Arc::clone(&reader)).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        assert_eq!(leaves.len(), 1);
+        let rectangle = Rectangle::new(-1.55, 1.55, -1.55, 1.55).unwrap();
+        let cases: Vec<(Arc<dyn Query>, f32, Vec<i32>)> = vec![
+            (
+                LatLonDocValuesField::new_slow_box_query(Some("lld"), -1.55, 1.55, -1.55, 1.55)
+                    .unwrap(),
+                5.0,
+                (85..=115).collect(),
+            ),
+            (
+                LatLonDocValuesField::new_slow_geometry_query(
+                    Some("lld"),
+                    QueryRelation::Within,
+                    vec![LatLonGeometryValue::Rectangle(rectangle)],
+                )
+                .unwrap(),
+                1000.0,
+                (85..=115).collect(),
+            ),
+            (
+                XYDocValuesField::new_slow_box_query(Some("xyd"), 10.5, 20.5, 10.5, 20.5).unwrap(),
+                1000.0,
+                (11..=20).collect(),
+            ),
+        ];
+        for (query, match_cost, expected) in cases {
+            let class = query.java_class_name();
+            let weight = query
+                .create_weight(&searcher, ScoreMode::COMPLETE_NO_SCORES, 1.0)
+                .unwrap();
+            let mut supplier = weight.scorer_supplier(&leaves[0]).unwrap().unwrap();
+            let mut scorer = supplier.get(i64::MAX).unwrap();
+            let two_phase = scorer
+                .two_phase_iterator()
+                .unwrap_or_else(|| panic!("{class}: no two-phase iterator"));
+            assert_eq!(two_phase.match_cost(), match_cost, "{class}");
+            assert_eq!(docs(scorer.iterator()), expected, "{class}");
+        }
+    }
+
+    /// Point values that count the intersections run over them.
+    struct CountingPointValues {
+        inner: Box<dyn PointValues>,
+        intersections: Arc<AtomicUsize>,
+    }
+
+    impl PointValues for CountingPointValues {
+        fn point_tree(&self) -> Result<Box<dyn crate::index::point_values::PointTree>> {
+            self.inner.point_tree()
+        }
+
+        fn intersect(&self, visitor: &mut dyn IntersectVisitor) -> Result<()> {
+            self.intersections.fetch_add(1, Ordering::SeqCst);
+            self.inner.intersect(visitor)
+        }
+
+        fn size(&self) -> Result<i64> {
+            self.inner.size()
+        }
+
+        fn doc_count(&self) -> Result<i32> {
+            self.inner.doc_count()
+        }
+
+        fn min_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            self.inner.min_packed_value()
+        }
+
+        fn max_packed_value(&self) -> Result<Option<Vec<u8>>> {
+            self.inner.max_packed_value()
+        }
+
+        fn num_dimensions(&self) -> Result<i32> {
+            self.inner.num_dimensions()
+        }
+
+        fn num_index_dimensions(&self) -> Result<i32> {
+            self.inner.num_index_dimensions()
+        }
+
+        fn bytes_per_dimension(&self) -> Result<i32> {
+            self.inner.bytes_per_dimension()
+        }
+    }
+
+    /// A leaf that hands out [`CountingPointValues`] over another leaf's.
+    #[derive(Debug)]
+    struct CountingLeafReader {
+        core: IndexReaderCore,
+        inner: Arc<dyn LeafReader>,
+        intersections: Arc<AtomicUsize>,
+        /// A field whose `FieldInfo` reports a doc-values generation, as a
+        /// doc-values update would leave it.
+        updated_field: Option<&'static str>,
+    }
+
+    impl CountingLeafReader {
+        fn over(inner: Arc<dyn LeafReader>, updated_field: Option<&'static str>) -> Arc<Self> {
+            Arc::new(Self {
+                core: IndexReaderCore::new(),
+                inner,
+                intersections: Arc::new(AtomicUsize::new(0)),
+                updated_field,
+            })
+        }
+
+        fn context(self: &Arc<Self>) -> LeafReaderContext {
+            LeafReaderContext::new(
+                Arc::clone(self) as Arc<dyn IndexReader>,
+                Arc::clone(self) as Arc<dyn LeafReader>,
+                None,
+                0,
+                0,
+                0,
+                0,
+            )
+        }
+    }
+
+    impl std::fmt::Display for CountingLeafReader {
+        /// Test double; it renders under its own name.
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("CountingLeafReader")
+        }
+    }
+
+    impl LeafReader for CountingLeafReader {
+        fn core(&self) -> &IndexReaderCore {
+            &self.core
+        }
+        fn term_vectors(&self) -> Result<Box<dyn TermVectors>> {
+            self.inner.term_vectors()
+        }
+        fn num_docs(&self) -> i32 {
+            self.inner.num_docs()
+        }
+        fn max_doc(&self) -> i32 {
+            self.inner.max_doc()
+        }
+        fn stored_fields(&self) -> Result<Box<dyn StoredFields>> {
+            self.inner.stored_fields()
+        }
+        fn do_close(&self) -> Result<()> {
+            Ok(())
+        }
+        fn get_reader_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn get_core_cache_helper(&self) -> Option<Box<dyn CacheHelper>> {
+            None
+        }
+        fn terms(&self, field: &str) -> Result<Option<Arc<dyn Terms>>> {
+            self.inner.terms(field)
+        }
+        fn get_numeric_doc_values(&self, f: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+            self.inner.get_numeric_doc_values(f)
+        }
+        fn get_binary_doc_values(&self, f: &str) -> Result<Option<Box<dyn BinaryDocValues>>> {
+            self.inner.get_binary_doc_values(f)
+        }
+        fn get_sorted_doc_values(&self, f: &str) -> Result<Option<Box<dyn SortedDocValues>>> {
+            self.inner.get_sorted_doc_values(f)
+        }
+        fn get_sorted_numeric_doc_values(
+            &self,
+            f: &str,
+        ) -> Result<Option<Box<dyn SortedNumericDocValues>>> {
+            self.inner.get_sorted_numeric_doc_values(f)
+        }
+        fn get_sorted_set_doc_values(
+            &self,
+            f: &str,
+        ) -> Result<Option<Box<dyn SortedSetDocValues>>> {
+            self.inner.get_sorted_set_doc_values(f)
+        }
+        fn get_norm_values(&self, f: &str) -> Result<Option<Box<dyn NumericDocValues>>> {
+            self.inner.get_norm_values(f)
+        }
+        fn get_doc_values_skipper(&self, f: &str) -> Result<Option<Box<dyn DocValuesSkipper>>> {
+            self.inner.get_doc_values_skipper(f)
+        }
+        fn get_float_vector_values(&self, f: &str) -> Result<Option<Box<dyn FloatVectorValues>>> {
+            self.inner.get_float_vector_values(f)
+        }
+        fn get_byte_vector_values(&self, f: &str) -> Result<Option<Box<dyn ByteVectorValues>>> {
+            self.inner.get_byte_vector_values(f)
+        }
+        fn search_nearest_vectors(
+            &self,
+            f: &str,
+            t: &[f32],
+            c: &mut dyn KnnCollector,
+            a: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            self.inner.search_nearest_vectors(f, t, c, a)
+        }
+        fn search_nearest_vectors_byte(
+            &self,
+            f: &str,
+            t: &[u8],
+            c: &mut dyn KnnCollector,
+            a: &mut dyn AcceptDocs,
+        ) -> Result<()> {
+            self.inner.search_nearest_vectors_byte(f, t, c, a)
+        }
+        fn get_field_infos(&self) -> FieldInfos {
+            let infos = self.inner.get_field_infos();
+            let Some(updated) = self.updated_field else {
+                return infos;
+            };
+            FieldInfos::new(
+                infos
+                    .iter()
+                    .map(|info| {
+                        let mut info = info.clone();
+                        if info.name == updated {
+                            info.set_doc_values_gen(1);
+                        }
+                        info
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        }
+        fn get_live_docs(&self) -> Option<Box<dyn Bits>> {
+            self.inner.get_live_docs()
+        }
+        fn get_point_values(&self, field: &str) -> Result<Option<Box<dyn PointValues>>> {
+            Ok(self.inner.get_point_values(field)?.map(|inner| {
+                Box::new(CountingPointValues {
+                    inner,
+                    intersections: Arc::clone(&self.intersections),
+                }) as Box<dyn PointValues>
+            }))
+        }
+        fn check_integrity(&self) -> Result<()> {
+            self.inner.check_integrity()
+        }
+        fn get_meta_data(&self) -> LeafMetaData {
+            self.inner.get_meta_data()
+        }
+    }
+
+    /// Asserts that `query`'s supplier walks the tree only in `get`: neither
+    /// `scorerSupplier` nor `cost()` (estimated once) intersects, and the
+    /// scorer matches `expected`.
+    fn assert_intersects_only_in_get(query: Arc<dyn Query>, expected: Vec<i32>) {
+        let reader = index();
+        let searcher = IndexSearcher::new(Arc::clone(&reader)).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        assert_eq!(leaves.len(), 1);
+        let class = query.java_class_name();
+        let leaf = CountingLeafReader::over(leaves[0].leaf_reader(), None);
+        let intersections = Arc::clone(&leaf.intersections);
+        let context = leaf.context();
+        let weight = query
+            .create_weight(&searcher, ScoreMode::COMPLETE_NO_SCORES, 1.0)
+            .unwrap();
+        let mut supplier = weight.scorer_supplier(&context).unwrap().unwrap();
+        assert_eq!(
+            intersections.load(Ordering::SeqCst),
+            0,
+            "{class}: scorerSupplier"
+        );
+        let cost = supplier.cost();
+        assert!(cost > 0, "{class}: cost {cost}");
+        assert_eq!(supplier.cost(), cost, "{class}: the estimate is memoised");
+        assert_eq!(intersections.load(Ordering::SeqCst), 0, "{class}: cost()");
+        let mut scorer = supplier.get(i64::MAX).unwrap();
+        assert_eq!(intersections.load(Ordering::SeqCst), 1, "{class}: get");
+        assert_eq!(docs(scorer.iterator()), expected, "{class}");
+    }
+
+    /// Regression for rmp #666: `LatLonPointDistanceQuery` and
+    /// `XYPointInGeometryQuery` intersect the tree only in
+    /// `ScorerSupplier.get(leadCost)`; `scorerSupplier` and `cost()` do not,
+    /// `cost()` estimating once (`LatLonPointDistanceQuery.java:141-172`,
+    /// `XYPointInGeometryQuery.java:151-175`). The scorer matches the same
+    /// documents.
+    #[test]
+    fn point_queries_intersect_only_when_the_scorer_is_built() {
+        // Documents 85..=115 lie within about 236 km of the origin, document
+        // 84 and 116 about 252 km away.
+        assert_intersects_only_in_get(
+            Arc::new(LatLonPointDistanceQuery::new("ll", 0.0, 0.0, 244_000.0).unwrap()),
+            (85..=115).collect(),
+        );
+        let xy_rectangle = XYRectangle::new(10.5, 20.5, 10.5, 20.5).unwrap();
+        assert_intersects_only_in_get(
+            Arc::new(
+                XYPointInGeometryQuery::new("xy", vec![XYGeometryValue::Rectangle(xy_rectangle)])
+                    .unwrap(),
+            ),
+            (11..=20).collect(),
+        );
+    }
+
+    /// Regression for rmp #666 (round 2): a `SpatialQuery` subclass, here
+    /// `LatLonPointQuery`, gets `SpatialQuery.getScorerSupplier`'s supplier,
+    /// which walks the tree only in `get` and estimates `cost()` once
+    /// (`SpatialQuery.java:150-206, 383-391`).
+    #[test]
+    fn spatial_queries_intersect_only_when_the_scorer_is_built() {
+        let rectangle = Rectangle::new(-1.55, 1.55, -1.55, 1.55).unwrap();
+        assert_intersects_only_in_get(
+            Arc::new(
+                LatLonPointQuery::new(
+                    "ll",
+                    QueryRelation::Intersects,
+                    vec![LatLonGeometryValue::Rectangle(rectangle)],
+                )
+                .unwrap(),
+            ),
+            (85..=115).collect(),
+        );
+    }
+
+    /// Regression for rmp #665 (round 2): the weights of the three doc-values
+    /// point queries answer `isCacheable` with `DocValues.isCacheable(ctx,
+    /// field)` (`LatLonDocValuesBoxQuery.java:160-163`,
+    /// `LatLonDocValuesQuery.java:165-168`,
+    /// `XYDocValuesPointInGeometryQuery.java:137-140`): not cacheable once
+    /// the field carries doc-values updates.
+    #[test]
+    fn doc_values_point_queries_are_not_cacheable_over_updated_doc_values() {
+        let reader = index();
+        let searcher = IndexSearcher::new(Arc::clone(&reader)).unwrap();
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let rectangle = Rectangle::new(-1.55, 1.55, -1.55, 1.55).unwrap();
+        let cases: Vec<(Arc<dyn Query>, &'static str)> = vec![
+            (
+                LatLonDocValuesField::new_slow_box_query(Some("lld"), -1.55, 1.55, -1.55, 1.55)
+                    .unwrap(),
+                "lld",
+            ),
+            (
+                LatLonDocValuesField::new_slow_geometry_query(
+                    Some("lld"),
+                    QueryRelation::Within,
+                    vec![LatLonGeometryValue::Rectangle(rectangle)],
+                )
+                .unwrap(),
+                "lld",
+            ),
+            (
+                XYDocValuesField::new_slow_box_query(Some("xyd"), 10.5, 20.5, 10.5, 20.5).unwrap(),
+                "xyd",
+            ),
+        ];
+        for (query, field) in cases {
+            let class = query.java_class_name();
+            let weight = query
+                .create_weight(&searcher, ScoreMode::COMPLETE_NO_SCORES, 1.0)
+                .unwrap();
+            assert!(weight.is_cacheable(&leaves[0]), "{class}: no update");
+            let other_field = if field == "lld" { "xyd" } else { "lld" };
+            let other = CountingLeafReader::over(leaves[0].leaf_reader(), Some(other_field));
+            assert!(
+                weight.is_cacheable(&other.context()),
+                "{class}: other field updated"
+            );
+            let updated = CountingLeafReader::over(leaves[0].leaf_reader(), Some(field));
+            assert!(
+                !weight.is_cacheable(&updated.context()),
+                "{class}: field updated"
+            );
+        }
     }
 }

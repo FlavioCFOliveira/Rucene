@@ -630,9 +630,8 @@ impl BigUint {
     fn sub(&self, other: &Self) -> Self {
         let mut words = Vec::with_capacity(self.words.len());
         let mut borrow = 0i64;
-        for i in 0..self.words.len() {
-            let mut d =
-                i64::from(self.words[i]) - i64::from(*other.words.get(i).unwrap_or(&0)) - borrow;
+        for (i, &word) in self.words.iter().enumerate() {
+            let mut d = i64::from(word) - i64::from(*other.words.get(i).unwrap_or(&0)) - borrow;
             if d < 0 {
                 d += 1 << 32;
                 borrow = 1;

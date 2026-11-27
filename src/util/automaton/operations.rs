@@ -135,8 +135,8 @@ impl PointTransitionSet {
             self.map.insert(point, idx);
             idx
         } else {
-            for i in 0..self.count {
-                if self.points[i].point == point {
+            for (i, p) in self.points[..self.count].iter().enumerate() {
+                if p.point == point {
                     return i;
                 }
             }
@@ -713,8 +713,7 @@ impl Operations {
             }
 
             // Collate all outgoing transitions by min/1+max:
-            for i in 0..s.values.len() {
-                let s0 = s.values[i];
+            for &s0 in &s.values {
                 let num_transitions = a.get_num_transitions(s0);
                 a.init_transition(s0, &mut t);
                 for _ in 0..num_transitions {

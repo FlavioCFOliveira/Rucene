@@ -3282,16 +3282,17 @@ mod tests {
         let format = Lucene99HnswVectorsFormat::with_merge_exec_and_threshold(16, 1, 1, None, 0);
         let mut writer = format.fields_writer(&write_state)?;
         match writer.add_field(&field_info) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!(
-                    "initialCapacity must be > 0 and < {}; got: 0",
-                    crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!(
+                        "initialCapacity must be > 0 and < {}; got: 0",
+                        crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+                    )
                 )
-            ),
+            }
             Err(other) => panic!("expected IllegalArgumentException, got {other:?}"),
             Ok(_) => panic!("expected IllegalArgumentException, got a field writer"),
         }
@@ -3681,7 +3682,7 @@ mod tests {
         write_vectors(&dir, &write_state, &field_info, 150)?;
         let format = Lucene99HnswVectorsFormat::new();
         let reader = format.fields_reader(&read_state)?;
-        let message = |e: LuceneError| match e.kind {
+        let message = |e: LuceneError| match e.into_kind() {
             LuceneErrorKind::IllegalArgument { message, .. } => message,
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };
@@ -4185,8 +4186,7 @@ mod tests {
             .search("float_field", &[0.0, 0.0, 0.0], &mut one, &mut all)
             .expect_err("the scorer rejects the target");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "vector query dimension: 3 differs from field dimension: 2"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "vector query dimension: 3 differs from field dimension: 2"),
             "{error:?}"
         );
         Ok(())

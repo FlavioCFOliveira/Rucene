@@ -6,6 +6,11 @@ from Apache Lucene and resources copied from it, together with the third-party
 material listed below. The attributions for Apache Lucene are taken from the
 NOTICE.txt file of Apache Lucene 10.5.0, limited to the material Rucene embeds.
 
+Apache Lucene, spatial4j, s2-geometry-library-java, NekoHTML and Apache
+Xerces-J are licensed under the Apache License, Version 2.0, whose full text is
+in licenses/Apache-2.0.txt. ICU4J is licensed under the Unicode License V3,
+whose full text is in crates/icu4j/LICENSE.
+
 ===========================================================================
 Apache Lucene
 ===========================================================================
@@ -15,6 +20,25 @@ Copyright 2001-2025 The Apache Software Foundation
 
 This product includes software developed at
 The Apache Software Foundation (http://www.apache.org/).
+
+Includes software from other Apache Software Foundation projects,
+including, but not limited to:
+ - Apache Jakarta Regexp
+ - Apache Commons
+ - Apache Xerces
+Rucene embeds, of these, part of Apache Xerces only (see "Apache Xerces-J"
+below).
+
+ICU4J, (under analysis/icu) is licensed under an MIT styles license
+and Copyright (c) 1995-2008 International Business Machines Corporation and others
+Rucene port: crates/icu4j/ (ICU4J 77.1, see "ICU4J" below)
+
+Some data files (under analysis/icu/src/data) are derived from Unicode data such
+as the Unicode Character Database. See http://unicode.org/copyright.html for more
+details.
+Rucene copies the files Lucene compiles from them, unchanged:
+crates/rucene-analysis-icu/resources/org/apache/lucene/analysis/icu/utr30.nrm and
+crates/rucene-analysis-icu/resources/org/apache/lucene/analysis/icu/segmentation/{Default,MyanmarSyllable}.brk
 
 Brics Automaton (under core/src/java/org/apache/lucene/util/automaton) is
 BSD-licensed, created by Anders Møller. See http://www.brics.dk/automaton/
@@ -107,3 +131,110 @@ unchanged. Its header reads:
 It is distributed under the Unicode License V3, whose full text is in
 crates/rucene-analysis-common/resources/icu/LICENSE
 (Copyright © 1991-2026 Unicode, Inc.).
+
+===========================================================================
+ICU4J
+===========================================================================
+
+crates/icu4j/ is a Rust translation of the ICU4J 77.1 classes that Apache
+Lucene 10.5.0 lucene/analysis/icu reaches (com.ibm.icu:icu4j:77.1, tag
+release-77-1). Each translated file keeps its ICU copyright line:
+
+  © 2016 and later: Unicode, Inc. and others.
+  License & terms of use: http://www.unicode.org/copyright.html
+
+crates/icu4j/data/ embeds 3476 ICU data files, byte-identical to the
+icu4j-77.1.jar that Lucene 10.5.0 uses (SHA-1
+38693cf0b1d7362a8b726af74dc06026a7c23809), among them the break-iterator
+dictionaries burmesedict, cjdict, khmerdict, laodict and thaidict.
+
+ICU4J and its data are distributed under the Unicode License V3
+(Copyright © 2016-2025 Unicode, Inc.). The full text, with the third-party
+notices of the Chinese/Japanese, Lao and Burmese word-break dictionaries and
+the other third-party software ICU includes, is in crates/icu4j/LICENSE: the
+LICENSE file of ICU at tag release-77-1, unchanged.
+
+===========================================================================
+spatial4j
+===========================================================================
+
+crates/spatial4j/ is a Rust translation of the part of LocationTech spatial4j
+0.8 (org.locationtech.spatial4j:spatial4j:0.8, tag spatial4j-0.8) that Apache
+Lucene 10.5.0 lucene/spatial-extras and lucene/benchmark use. Each translated
+file keeps its upstream copyright notice, for example:
+
+  Copyright (c) 2015 Voyager Search and MITRE
+
+spatial4j is licensed under the Apache License, Version 2.0. Its about.md
+(tag spatial4j-0.8) reads, in part:
+
+  The Eclipse Foundation makes available all content in this plug-in
+  ("Content"). Unless otherwise indicated below, the Content is provided to
+  you under the terms and conditions of the Apache License, Version 2.0.
+
+===========================================================================
+s2-geometry-library-java
+===========================================================================
+
+crates/s2-geometry/ is a Rust translation of the part of
+s2-geometry-library-java 1.0.0 (io.sgr:s2-geometry-library-java:1.0.0, tag
+v1.0.0) that Apache Lucene 10.5.0 lucene/spatial-extras uses. Each translated
+file keeps its upstream copyright notice:
+
+  Copyright 2005 Google Inc.
+
+s2-geometry-library-java is licensed under the Apache License, Version 2.0.
+It ships no NOTICE file.
+
+===========================================================================
+NekoHTML
+===========================================================================
+
+crates/nekohtml/ is a Rust translation of the part of the CyberNeko HTML
+Parser 1.9.17 (net.sourceforge.nekohtml:nekohtml:1.9.17) that Apache Lucene
+10.5.0 lucene/benchmark uses, with its message and entity resource files
+(crates/nekohtml/src/org/cyberneko/html/res/) copied unchanged. NekoHTML is
+licensed under the Apache License, Version 2.0. Its notice, as Apache Lucene
+10.5.0 distributes it (lucene/licenses/nekohtml-NOTICE.txt), reads:
+
+  CyberNeko HTML Parser
+  (C) Copyright 2002-2009, Andy Clark, Marc Guillemot. All rights reserved.
+
+===========================================================================
+Apache Xerces-J
+===========================================================================
+
+crates/nekohtml/src/org/apache/xerces/ is a Rust translation of the part of
+Apache Xerces-J 2.12.2 (xerces:xercesImpl:2.12.2) that NekoHTML uses, with
+SAXMessages.properties copied with LF line endings. The NOTICE of
+xercesImpl-2.12.2.jar reads:
+
+   Apache Xerces Java
+   Copyright 1999-2022 The Apache Software Foundation
+
+   This product includes software developed at
+   The Apache Software Foundation (http://www.apache.org/).
+
+   Portions of this software were originally based on the following:
+     - software copyright (c) 1999, IBM Corporation., http://www.ibm.com.
+     - software copyright (c) 1999, Sun Microsystems., http://www.sun.com.
+     - voluntary contributions made by Paul Eng on behalf of the
+       Apache Software Foundation that were originally developed at iClick, Inc.,
+       software copyright (c) 1999.
+
+===========================================================================
+SAX
+===========================================================================
+
+crates/nekohtml/src/org/xml/sax/ is a Rust translation of the SAX 2.0.2
+interfaces (org.xml.sax, org.xml.sax.ext, org.xml.sax.helpers) of Apache XML
+Commons xml-apis 1.4.01. SAX is in the public domain; LICENSE.sax.txt of
+xml-apis-1.4.01.jar reads, in part:
+
+  I hereby abandon any property rights to SAX 2.0 (the Simple API for
+  XML), and release all of the SAX 2.0 source code, compiled code, and
+  documentation contained in this distribution into the Public Domain.
+  SAX comes with NO WARRANTY or guarantee of fitness for any
+  purpose.
+
+  David Megginson, david@megginson.com

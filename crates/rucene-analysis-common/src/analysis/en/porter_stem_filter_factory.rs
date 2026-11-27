@@ -110,4 +110,11 @@ impl TokenFilterFactory for PorterStemFilterFactory {
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(new_porter_stem_filter(input)?))
     }
+
+    /// `create(input)` as an owned stage (`PorterStemFilterFactory.java:56-59`).
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        Some(Ok(Box::new(
+            crate::analysis::en::porter_stem_filter::OwnedPorterStemFilter::default(),
+        )))
+    }
 }

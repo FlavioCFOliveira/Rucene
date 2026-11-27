@@ -1,0 +1,16 @@
+{
+  "comment": "Local roots of the reference projects whose Java AST the java layer reads. Module scope (inScope, path, scopeFiles) is read from the graph's Module nodes. A project whose root is missing is cloned with `clone`; if it stays missing, its modules are skipped, never deleted.",
+  "projects": [
+    {"project": "Apache Lucene Core 10.5.0", "root": "/tmp/lucene1050",
+     "clone": ["git", "clone", "-q", "--depth", "1", "--branch", "releases/lucene/10.5.0", "https://github.com/apache/lucene.git", "/tmp/lucene1050"]},
+    {"project": "randomizedtesting 2.8.1", "root": "/tmp/randomizedtesting281",
+     "clone": ["git", "clone", "-q", "--depth", "1", "--branch", "release/2.8.1", "https://github.com/randomizedtesting/randomizedtesting.git", "/tmp/randomizedtesting281"]},
+    {"project": "spatial4j 0.8", "root": "/tmp/spatial4j-0.8",
+     "clone": ["git", "clone", "-q", "--depth", "1", "--branch", "spatial4j-0.8", "https://github.com/locationtech/spatial4j.git", "/tmp/spatial4j-0.8"]},
+    {"project": "icu4j 77.1", "root": "/tmp/icu-77.1/icu4j",
+     "clone": ["sh", "-c", "git clone -q --depth 1 --filter=blob:none --sparse --branch release-77-1 https://github.com/unicode-org/icu.git /tmp/icu-77.1 && git -C /tmp/icu-77.1 sparse-checkout set icu4j/main"]},
+    {"project": "s2-geometry-library-java 1.0.0", "root": "/tmp/s2-geometry-1.0.0",
+     "clone": ["git", "clone", "-q", "--depth", "1", "--branch", "v1.0.0", "https://github.com/sgr-io/s2-geometry-library-java.git", "/tmp/s2-geometry-1.0.0"]},
+    {"project": "nekohtml 1.9.17", "root": "/tmp/nekohtml-1.9.17", "clone": null}
+  ]
+}

@@ -792,6 +792,19 @@ impl FieldInfo {
         )
     }
 
+    /// The internal codec attributes map itself, shared rather than copied:
+    /// `FieldInfo.attributes()` (`FieldInfo.java:682-685`) for a caller that
+    /// only reads it. A later [`put_attribute`](Self::put_attribute) replaces
+    /// the map and leaves this one as it was.
+    pub(crate) fn attributes_shared(&self) -> Arc<JavaStringMap> {
+        Arc::clone(
+            &self
+                .attributes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     /// Verifies that the combination of field options is internally consistent.
     ///
     /// # Errors
@@ -1090,6 +1103,12 @@ pub struct FieldInfos {
     /// while internal field numbers are preserved for merge contexts.
     /// This mirrors the filtered view previously provided by the codec stub.
     filtered_names: Option<Arc<HashSet<String>>>,
+
+    /// When present, [`field_info`](Self::field_info) and
+    /// [`shared_field_info`](Self::shared_field_info) look up this name
+    /// whatever name they are asked for (see
+    /// [`with_field_info_name_override`](Self::with_field_info_name_override)).
+    field_info_name_override: Option<Arc<str>>,
 }
 
 impl std::fmt::Debug for FieldInfos {
@@ -1111,6 +1130,7 @@ impl std::fmt::Debug for FieldInfos {
             .field("soft_deletes_field", &self.core.soft_deletes_field)
             .field("parent_field", &self.core.parent_field)
             .field("filtered_names", &self.filtered_names.as_deref())
+            .field("field_info_name_override", &self.field_info_name_override)
             .finish()
     }
 }
@@ -1223,7 +1243,18 @@ impl FieldInfos {
         // One `Arc` per field, shared by `by_name`, `by_number` and `values`,
         // so that the collections alias a single object exactly as Java's
         // map and arrays do.
-        let infos: Vec<Arc<FieldInfo>> = infos.into_iter().map(Arc::new).collect();
+        Self::from_shared(infos.into_iter().map(Arc::new).collect())
+    }
+
+    /// Creates a `FieldInfos` over the given shared [`FieldInfo`] objects:
+    /// `new FieldInfos(FieldInfo[])` keeps the caller's objects, so a
+    /// `FieldInfo` handle the caller holds and the one this `FieldInfos`
+    /// returns are the same object (for example the attribute map).
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new).
+    pub fn from_shared(infos: Vec<Arc<FieldInfo>>) -> Result<Self> {
         // A `FieldName` hashes the field's name alone, which never changes;
         // the interior mutability the lint sees is the attribute map.
         #[allow(clippy::mutable_key_type)]
@@ -1351,7 +1382,20 @@ impl FieldInfos {
             has_point_values,
             has_vector_values,
             filtered_names: None,
+            field_info_name_override: None,
         })
+    }
+
+    /// This `FieldInfos` whose name lookups always answer the field `name`.
+    ///
+    /// Equivalent to an anonymous Java subclass of `FieldInfos` that overrides
+    /// `fieldInfo(String)` as `return super.fieldInfo(name);`, as
+    /// `WeightedSpanTermExtractor.DelegatingLeafReader.getFieldInfos()` does
+    /// (`WeightedSpanTermExtractor.java:415-424`). Iteration, numbering and the
+    /// aggregate flags are those of `self`.
+    pub fn with_field_info_name_override(mut self, name: &str) -> Self {
+        self.field_info_name_override = Some(Arc::from(name));
+        self
     }
 
     /// Returns an empty `FieldInfos`.
@@ -1403,6 +1447,7 @@ impl FieldInfos {
 
     /// Looks up a visible field by name.
     pub fn field_info(&self, name: &str) -> Option<&FieldInfo> {
+        let name = self.field_info_name_override.as_deref().unwrap_or(name);
         if !self.is_visible(name) {
             return None;
         }
@@ -1416,6 +1461,7 @@ impl FieldInfos {
     /// field's one `FieldInfo` object, as Java's `fieldInfo(String)` answers
     /// the reference itself.
     pub fn shared_field_info(&self, name: &str) -> Option<&Arc<FieldInfo>> {
+        let name = self.field_info_name_override.as_deref().unwrap_or(name);
         if !self.is_visible(name) {
             return None;
         }
@@ -2166,7 +2212,9 @@ impl FieldInfosBuilder {
             // `FieldInfos.Builder.add` walks `fi.attributes().keySet()`, so
             // the order the attributes are re-put in is the source map's
             // iteration order and the merged map's own order follows from it.
-            let attributes = info.attributes();
+            // PERF: the source map is read in place, as Java reads
+            // `fi.attributes()`, not copied first.
+            let attributes = info.attributes_shared();
             let has_payloads = info.has_payloads();
             let current = self
                 .by_name
@@ -2352,13 +2400,7 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_payloads = true; // direct mutation for test
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2366,13 +2408,7 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.store_term_vector = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2380,13 +2416,7 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.omit_norms = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2394,13 +2424,7 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_skip_index_type = DocValuesSkipIndexType::RANGE;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2437,13 +2461,7 @@ mod tests {
         let mut fi = FieldInfo::new("bad", 0);
         fi.doc_values_gen = 1;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2452,13 +2470,7 @@ mod tests {
         fi.soft_deletes_field = true;
         fi.is_parent_field = true;
         let err = fi.check_consistency().expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2472,13 +2484,7 @@ mod tests {
         let err = fi
             .set_point_dimensions(3, 1, 8)
             .expect_err("dimension change should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2490,13 +2496,7 @@ mod tests {
             false,
         );
         let err = a.verify_same_schema(&b).expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2545,13 +2545,7 @@ mod tests {
     fn field_infos_rejects_negative_number() {
         let fi = FieldInfo::new("bad", -1);
         let err = FieldInfos::new(vec![fi]).expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2559,13 +2553,7 @@ mod tests {
         let a = FieldInfo::new("dup", 0);
         let b = FieldInfo::new("dup", 1);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2573,13 +2561,7 @@ mod tests {
         let a = FieldInfo::new("a", 0);
         let b = FieldInfo::new("b", 0);
         let err = FieldInfos::new(vec![a, b]).expect_err("should fail");
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalArgument { .. }));
     }
 
     #[test]
@@ -2660,11 +2642,8 @@ mod tests {
         conflicting.index_options = IndexOptions::DOCS_AND_FREQS;
         let error = numbers.add_or_get(&conflicting).unwrap_err();
         assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            }
+            &error.kind,
+            LuceneErrorKind::IllegalArgument { .. }
         ));
         assert!(numbers.verify_field_info(&conflicting).is_err());
         assert!(numbers.verify_field_info(&indexed_field("a")).is_ok());
@@ -2745,13 +2724,7 @@ mod tests {
         // Re-adding a known field is still fine; a new one is not.
         assert!(builder.add(&indexed_field("a")).is_ok());
         let error = builder.add(&indexed_field("b")).unwrap_err();
-        assert!(matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&error.kind, LuceneErrorKind::IllegalState { .. }));
     }
 
     #[test]

@@ -1001,6 +1001,17 @@ pub trait TokenizerFactory: Send + Sync + std::fmt::Debug {
     ///
     /// Returns what the tokenizer's construction and configuration return.
     fn create_with_factory(&self, factory: Arc<dyn AttributeFactory>) -> Result<FactoryTokenizer>;
+
+    /// The tokenizer [`create`](Self::create) builds, as an owned stage (see
+    /// [`owned`](crate::analysis::owned)), or `None` (the default) when the
+    /// factory does not describe one. An implementation that answers must
+    /// reproduce exactly the tokenizer `create()` builds, with its settings.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679/#682 owned stream).
+    #[doc(hidden)]
+    fn owned_tokenizer(&self) -> Option<Result<Box<dyn crate::analysis::owned::OwnedTokenizer>>> {
+        None
+    }
     /// Returns this factory as a [`ResourceLoaderAware`], or `None` when it is
     /// not one.
     ///
@@ -1043,6 +1054,19 @@ pub trait TokenFilterFactory: Send + Sync + std::fmt::Debug {
     /// Returns what the filter's construction returns (Java's `addAttribute`
     /// failures).
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>>;
+
+    /// The filter [`create`](Self::create) builds, as an owned stage (see
+    /// [`owned`](crate::analysis::owned)), or `None` (the default) when the
+    /// factory does not describe one. An implementation that answers must
+    /// reproduce exactly the filter `create(input)` builds, with its
+    /// settings, and add no attribute implementation other than the default
+    /// factory's packed one and a `KeywordAttributeImpl`.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679/#682 owned stream).
+    #[doc(hidden)]
+    fn owned_filter(&self) -> Option<Result<Box<dyn crate::analysis::owned::OwnedTokenFilter>>> {
+        None
+    }
 
     /// Normalizes `input`.
     ///
@@ -1506,16 +1530,12 @@ impl<T: ?Sized + 'static> AnalysisSPILoader<T> {
 /// `e.toString()`, and `e` is its cause.
 fn find_spi_name_failure(cause: LuceneError) -> LuceneError {
     let message = match &cause {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => {
+        __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
             format!("java.lang.IllegalStateException: {message}")
         }
-        LuceneError {
-            kind: LuceneErrorKind::Other(message),
-            ..
-        } => format!("java.lang.NoSuchFieldException: {message}"),
+        __lerr if let LuceneErrorKind::Other(message) = &__lerr.kind => {
+            format!("java.lang.NoSuchFieldException: {message}")
+        }
         other => other.to_string(),
     };
     LuceneError::illegal_state_with_cause(message, Arc::new(cause))
@@ -1885,21 +1905,15 @@ mod parse_exception_tests {
         let expected = "failed to parse lenient version string \"x.y\": Failed to parse major \
                         version from \"X\" (got: X.Y)";
         match AbstractAnalysisFactory::new(&mut args) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
-                assert_eq!(message, format!("java.text.ParseException: {expected}"));
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
+                assert_eq!(*message, format!("java.text.ParseException: {expected}"));
                 assert!(
-                    matches!(
-                        cause.as_ref(),
-                        LuceneError { kind: LuceneErrorKind::Unchecked { class, message: Some(message), .. }, .. }
-                            if *class == crate::util::extra::PARSE_EXCEPTION && message == expected
-                    ),
+                    matches!(&cause.as_ref().kind, LuceneErrorKind::Unchecked { class, message: Some(message), .. } if *class == crate::util::extra::PARSE_EXCEPTION && message == expected),
                     "{cause:?}"
                 );
             }
@@ -1996,10 +2010,9 @@ mod spi_tests {
             ("zap".to_string(), "1".to_string()),
         ]);
         match tokenizer_for_name("Standard", &mut leftovers) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "Unknown parameters: {foo=bar, zap=1}")
             }
             other => panic!("expected the leftover-argument error, got {other:?}"),
@@ -2011,16 +2024,17 @@ mod spi_tests {
     #[test]
     fn an_unregistered_name_fails_with_the_loaders_message() {
         match token_filter_for_name("lowercase", &mut HashMap::new()) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "A SPI class of type org.apache.lucene.analysis.TokenFilterFactory with name \
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    message,
+                    "A SPI class of type org.apache.lucene.analysis.TokenFilterFactory with name \
                  'lowercase' does not exist. You need to add the corresponding JAR file \
                  supporting this SPI to your classpath. The current classpath supports the \
                  following names: []"
-            ),
+                )
+            }
             other => panic!("expected the lookup error, got {other:?}"),
         }
     }
@@ -2111,22 +2125,14 @@ mod spi_tests {
                 ],
             );
             let error = loader.reload(&refused).unwrap_err();
-            match (&error, &expected_cause) {
+            match (&error.kind, &expected_cause) {
+                (LuceneErrorKind::IllegalArgument { message, .. }, None) => {
+                    assert_eq!(message, expected)
+                }
                 (
-                    LuceneError {
-                        kind: LuceneErrorKind::IllegalArgument { message, .. },
-                        ..
-                    },
-                    None,
-                ) => assert_eq!(message, expected),
-                (
-                    LuceneError {
-                        kind:
-                            LuceneErrorKind::IllegalArgument {
-                                message,
-                                cause: Some(cause),
-                            },
-                        ..
+                    LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
                     },
                     Some(want),
                 ) => {
@@ -2171,26 +2177,22 @@ mod spi_tests {
         // `AnalysisOracle` (pass I): the `UnsupportedOperationException`'s
         // cause is `java.lang.NoSuchMethodException: <class>.<init>(java.util.Map)`.
         match loader.new_instance("NOMAP", &mut HashMap::new()) {
-            Err(
-                error @ LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { cause: Some(_), .. },
-                    ..
-                },
-            ) => {
+            Err(error)
+                if matches!(
+                    error.kind,
+                    LuceneErrorKind::UnsupportedOperation { cause: Some(_), .. }
+                ) =>
+            {
                 assert_eq!(error.java_simple_name(), "UnsupportedOperationException");
                 // `getCause()`.
                 assert_eq!(
                     std::error::Error::source(&error).map(ToString::to_string),
                     Some("no such method: org.example.NoMapCtor.<init>(java.util.Map)".to_string())
                 );
-                let LuceneError {
-                    kind:
-                        LuceneErrorKind::UnsupportedOperation {
-                            message,
-                            cause: Some(cause),
-                        },
-                    ..
-                } = error
+                let LuceneErrorKind::UnsupportedOperation {
+                    message,
+                    cause: Some(cause),
+                } = error.into_kind()
                 else {
                     unreachable!()
                 };
@@ -2201,8 +2203,7 @@ mod spi_tests {
                 );
                 assert_eq!(cause.java_simple_name(), "NoSuchMethodException");
                 assert!(
-                    matches!(&*cause, LuceneError { kind: LuceneErrorKind::NoSuchMethod(m), .. }
-                        if m == "org.example.NoMapCtor.<init>(java.util.Map)"),
+                    matches!(&cause.kind, LuceneErrorKind::NoSuchMethod(m) if m == "org.example.NoMapCtor.<init>(java.util.Map)"),
                     "{cause:?}"
                 );
             }
@@ -2232,10 +2233,9 @@ mod spi_tests {
             ),
         ] {
             match find_tokenizer_spi_name(class) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalState { message, cause },
-                    ..
-                }) => {
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalState { message, cause } = &__lerr.kind =>
+                {
                     assert_eq!(message, expected);
                     assert!(cause.is_some(), "the failure is the cause");
                 }
@@ -2256,12 +2256,11 @@ mod spi_tests {
     /// The scan's refusal of [`wrong_loader`]'s class.
     fn assert_not_a_subtype(service: &str, result: Result<()>) {
         match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(
-                    message,
+                    *message,
                     format!("{service}: org.example.Wrong not a subtype")
                 )
             }
@@ -2297,14 +2296,15 @@ mod spi_tests {
     #[test]
     fn the_no_argument_constructor_throws_the_default_ctor_exception() {
         match crate::analysis::standard::StandardTokenizerFactory::new_without_args() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "Analysis factories cannot be instantiated without arguments. Use applicable \
+            Err(ref __lerr)
+                if let LuceneErrorKind::UnsupportedOperation { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    message,
+                    "Analysis factories cannot be instantiated without arguments. Use applicable \
                  factory methods of TokenizerFactory, CharFilterFactory, or TokenFilterFactory."
-            ),
+                )
+            }
             other => panic!("expected the default constructor exception, got {other:?}"),
         }
     }
@@ -2327,14 +2327,12 @@ mod accessor_tests {
             "expected an IllegalArgumentException, got {error:?}"
         );
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            } => message,
-            LuceneError {
-                kind: LuceneErrorKind::Unchecked { message, .. },
-                ..
-            } => message.unwrap_or_default(),
+            ref __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+                message.clone()
+            }
+            ref __lerr if let LuceneErrorKind::Unchecked { message, .. } = &__lerr.kind => {
+                message.clone().unwrap_or_default()
+            }
             other => unreachable!("{other:?}"),
         }
     }
@@ -2408,18 +2406,9 @@ mod accessor_tests {
         // `java.lang.StringIndexOutOfBoundsException: Index 0 out of bounds
         // for length 0`.
         match AbstractAnalysisFactory::require_char(&mut one("c", ""), "c") {
-            Err(
-                error @ LuceneError {
-                    kind: LuceneErrorKind::StringIndexOutOfBounds(_),
-                    ..
-                },
-            ) => {
+            Err(error) if matches!(error.kind, LuceneErrorKind::StringIndexOutOfBounds(_)) => {
                 assert_eq!(error.java_simple_name(), "StringIndexOutOfBoundsException");
-                let LuceneError {
-                    kind: LuceneErrorKind::StringIndexOutOfBounds(message),
-                    ..
-                } = error
-                else {
+                let LuceneErrorKind::StringIndexOutOfBounds(message) = error.into_kind() else {
                     unreachable!()
                 };
                 assert_eq!(message, "Index 0 out of bounds for length 0");
@@ -2861,7 +2850,7 @@ mod get_pattern_tests {
                 "{count} of a body that can match the empty string, with {construct}"
             );
             match compile(pattern) {
-                Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message, cause: Some(cause) }, .. }) => {
+                Err(ref __lerr) if let LuceneErrorKind::IllegalArgument { message, cause: Some(cause) } = &__lerr.kind => {
                     assert_eq!(
                         message,
                         "Configuration Error: 'pattern' can not be parsed in ProbeFactory"

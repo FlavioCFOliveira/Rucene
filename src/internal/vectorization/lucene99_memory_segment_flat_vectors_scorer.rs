@@ -8,7 +8,7 @@ use std::sync::{Arc, LazyLock};
 use crate::codecs::hnsw::flat_vectors::check_dimensions;
 use crate::codecs::hnsw::{DefaultFlatVectorScorer, FlatVectorsScorer};
 use crate::error::Result;
-use crate::index::vector_values::{ByteVectorValues, FloatVectorValues};
+use crate::index::vector_values::{ByteVectorValues, FloatVectorValues, KnnVectorValues};
 use crate::index::VectorSimilarityFunction;
 use crate::internal::vectorization::{
     Lucene99MemorySegmentByteVectorScorer, Lucene99MemorySegmentByteVectorScorerSupplier,
@@ -23,23 +23,17 @@ use crate::util::hnsw::{RandomVectorScorer, RandomVectorScorerSupplier};
 /// Equivalent to
 /// `org.apache.lucene.internal.vectorization.Lucene99MemorySegmentFlatVectorsScorer`.
 ///
-/// # Divergence from Lucene 10.5.0: the routing is explicit
-///
-/// Java decides at run time with two `instanceof` tests: the values must be a
-/// `HasIndexSlice` whose slice is non-null, and that slice must be a
-/// `MemorySegmentAccessInput`; when either fails it calls the delegate. The
-/// second test is made by the memory-segment scorers' own `create`, which
-/// unwrap and narrow the slice as Java does. The first is not expressible:
-/// Rust cannot test a trait object for a *different* trait — there is no
-/// downcast from `dyn FloatVectorValues` to `dyn HasIndexSlice` — so the
-/// [`FlatVectorsScorer`] implementation below always takes Lucene's delegate
-/// branch, and the memory-segment path is reached through the four inherent
-/// methods, which take the slice the caller already holds.
+/// The [`FlatVectorsScorer`] implementation reproduces Java's run-time
+/// routing: the values must be a `HasIndexSlice` whose slice is non-null
+/// (asked through [`KnnVectorValues::as_has_index_slice`]), and that slice must
+/// be a `MemorySegmentAccessInput`, a test the memory-segment scorers' own
+/// `create` make after unwrapping the test-only filters; when either fails the
+/// delegate scores the same values.
 ///
 /// The `assert !(vectorValues instanceof BaseQuantizedByteVectorValues)` Java
-/// carries in its byte methods is not reproduced for the same reason; the typed
-/// entry points make the mistake it guards against unrepresentable, since
-/// quantized values are scored by
+/// carries in its byte methods is not reproduced: quantized values are not a
+/// [`ByteVectorValues`] in this port, so the mistake it guards against is
+/// unrepresentable; they are scored by
 /// [`Lucene99MemorySegmentScalarQuantizedVectorScorer`](super::Lucene99MemorySegmentScalarQuantizedVectorScorer)
 /// instead.
 pub struct Lucene99MemorySegmentFlatVectorsScorer {
@@ -272,41 +266,97 @@ impl Lucene99MemorySegmentFlatVectorsScorer {
     }
 }
 
+/// `vectorValues instanceof HasIndexSlice sliceableValues &&
+/// sliceableValues.getSlice() != null`, answering the slice itself.
+///
+/// Java hands the scorer the slice the values hold. Here the values are then
+/// moved into the scorer, which a borrow of their slice would forbid, so the
+/// scorer receives its own handle on the same data (`clone()`), as
+/// `Lucene99MemorySegmentScalarQuantizedVectorScorer` does for its slice.
+fn index_slice(values: &dyn KnnVectorValues) -> Result<Option<Box<dyn IndexInput>>> {
+    match values.as_has_index_slice() {
+        Some(sliceable) => match sliceable.get_slice() {
+            Some(slice) => Ok(Some(slice.clone_input()?)),
+            None => Ok(None),
+        },
+        None => Ok(None),
+    }
+}
+
+/// Equivalent to the four `FlatVectorsScorer` methods of
+/// `Lucene99MemorySegmentFlatVectorsScorer`
+/// (`Lucene99MemorySegmentFlatVectorsScorer.java:42-119`).
 impl FlatVectorsScorer for Lucene99MemorySegmentFlatVectorsScorer {
+    /// The `FLOAT32` arm of `getRandomVectorScorerSupplier`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:42-49`), which calls
+    /// `getFloatScoringSupplier`.
     fn get_random_vector_scorer_supplier_float(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn FloatVectorValues>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
-        self.delegate
-            .get_random_vector_scorer_supplier_float(similarity_function, vector_values)
+        let slice = index_slice(vector_values.as_ref())?;
+        self.get_float_scoring_supplier(vector_values, similarity_function, slice.as_deref())
     }
 
+    /// The `BYTE` arm of `getRandomVectorScorerSupplier`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:42-49`), which calls
+    /// `getByteScorerSupplier`.
     fn get_random_vector_scorer_supplier_byte(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn ByteVectorValues>,
     ) -> Result<Box<dyn RandomVectorScorerSupplier>> {
-        self.delegate
-            .get_random_vector_scorer_supplier_byte(similarity_function, vector_values)
+        let slice = index_slice(vector_values.as_ref())?;
+        self.get_byte_scorer_supplier(vector_values, similarity_function, slice.as_deref())
     }
 
+    /// Equivalent to `getRandomVectorScorer(VectorSimilarityFunction,
+    /// KnnVectorValues, float[])` (`Lucene99MemorySegmentFlatVectorsScorer.java:83-99`).
     fn get_random_vector_scorer_float(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn FloatVectorValues>,
         target: &[f32],
     ) -> Result<Box<dyn RandomVectorScorer>> {
+        check_dimensions(target.len() as i32, vector_values.dimension())?;
+        let vector_values = match index_slice(vector_values.as_ref())? {
+            Some(slice) => match Lucene99MemorySegmentFloatVectorScorer::create_or_decline(
+                similarity_function,
+                slice.as_ref(),
+                vector_values,
+                target,
+            )? {
+                Ok(scorer) => return Ok(Box::new(scorer)),
+                Err(declined) => declined,
+            },
+            None => vector_values,
+        };
         self.delegate
             .get_random_vector_scorer_float(similarity_function, vector_values, target)
     }
 
+    /// Equivalent to `getRandomVectorScorer(VectorSimilarityFunction,
+    /// KnnVectorValues, byte[])` (`Lucene99MemorySegmentFlatVectorsScorer.java:101-119`).
     fn get_random_vector_scorer_byte(
         &self,
         similarity_function: VectorSimilarityFunction,
         vector_values: Box<dyn ByteVectorValues>,
         target: &[u8],
     ) -> Result<Box<dyn RandomVectorScorer>> {
+        check_dimensions(target.len() as i32, vector_values.dimension())?;
+        let vector_values = match index_slice(vector_values.as_ref())? {
+            Some(slice) => match Lucene99MemorySegmentByteVectorScorer::create_or_decline(
+                similarity_function,
+                slice.as_ref(),
+                vector_values,
+                target,
+            )? {
+                Ok(scorer) => return Ok(Box::new(scorer)),
+                Err(declined) => declined,
+            },
+            None => vector_values,
+        };
         self.delegate
             .get_random_vector_scorer_byte(similarity_function, vector_values, target)
     }
@@ -689,6 +739,119 @@ mod tests {
             copies.load(Ordering::SeqCst)
         };
         assert_eq!(byte_copies(Some(heap.as_ref())), byte_copies(None));
+    }
+
+    /// Regression for rmp #660: the Lucene99 off-heap vector values implement
+    /// `HasIndexSlice` (`OffHeapFloatVectorValues.java:35`,
+    /// `OffHeapByteVectorValues.java:36`), so the `FlatVectorsScorer` methods
+    /// take the memory-segment path for a mapped slice
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:51-118`), scoring exactly
+    /// as the default scorer, and fall back to the delegate for a heap slice.
+    #[test]
+    fn lucene99_off_heap_values_take_the_slice_path() {
+        use crate::codecs::lucene99::flat_vectors_format::{
+            new_dense_off_heap_byte_vector_values, new_dense_off_heap_float_vector_values,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir =
+            MMapDirectory::with_lock_factory(tmp.path(), Box::new(NativeFSLockFactory)).unwrap();
+        let mut out = dir.create_output("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+        for vector in FLOATS {
+            for value in vector {
+                out.write_bytes(&value.to_le_bytes(), 0, 4).unwrap();
+            }
+        }
+        for vector in BYTES {
+            out.write_bytes(&vector, 0, 4).unwrap();
+        }
+        out.close().unwrap();
+        let memory = ByteBuffersDirectory::new();
+        let mut out = memory.create_output("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+        out.write_bytes(&[0u8; 80], 0, 80).unwrap();
+        out.close().unwrap();
+
+        let ms = Lucene99MemorySegmentFlatVectorsScorer::instance();
+        let ms_dyn: Arc<dyn FlatVectorsScorer> = Arc::clone(&ms) as Arc<dyn FlatVectorsScorer>;
+        let default = DefaultFlatVectorScorer::INSTANCE;
+        let sim = VectorSimilarityFunction::EUCLIDEAN;
+        // `vectorData.slice("vector-data", offset, length)`, as the Lucene99
+        // reader slices each field's region before loading its values.
+        let floats = |d: &dyn Directory| {
+            let input = d.open_input("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+            let slice = input.slice("vector-data", 0, 64).unwrap();
+            new_dense_off_heap_float_vector_values(4, 4, slice, 16, Arc::clone(&ms_dyn), sim)
+        };
+        let bytes = |d: &dyn Directory| {
+            let input = d.open_input("v.vec", &*DEFAULT_IO_CONTEXT).unwrap();
+            let slice = input.slice("vector-data", 64, 16).unwrap();
+            new_dense_off_heap_byte_vector_values(4, 4, slice, 4, Arc::clone(&ms_dyn), sim)
+        };
+        let scores = |scorer: &mut dyn RandomVectorScorer| -> Vec<f32> {
+            (0..4).map(|node| scorer.score(node).unwrap()).collect()
+        };
+        let supplier_scores = |supplier: &dyn RandomVectorScorerSupplier| -> Vec<f32> {
+            let mut scorer = supplier.scorer().unwrap();
+            scorer.set_scoring_ordinal(0).unwrap();
+            (0..4).map(|node| scorer.score(node).unwrap()).collect()
+        };
+
+        // Mapped slice: the memory-segment scorers, scoring as the default one.
+        let mut scorer = ms
+            .get_random_vector_scorer_float(sim, floats(&dir), &FLOAT_QUERY)
+            .unwrap();
+        assert!(RandomVectorScorer::to_string(&*scorer)
+            .contains("Lucene99MemorySegmentFloatVectorScorer@"));
+        let mut expected = default
+            .get_random_vector_scorer_float(sim, floats(&dir), &FLOAT_QUERY)
+            .unwrap();
+        assert_eq!(scores(scorer.as_mut()), scores(expected.as_mut()));
+
+        let supplier = ms
+            .get_random_vector_scorer_supplier_float(sim, floats(&dir))
+            .unwrap();
+        assert!(RandomVectorScorerSupplier::to_string(supplier.as_ref())
+            .contains("Lucene99MemorySegmentFloatVectorScorerSupplier@"));
+        let expected = default
+            .get_random_vector_scorer_supplier_float(sim, floats(&dir))
+            .unwrap();
+        assert_eq!(
+            supplier_scores(supplier.as_ref()),
+            supplier_scores(expected.as_ref())
+        );
+
+        let mut scorer = ms
+            .get_random_vector_scorer_byte(sim, bytes(&dir), &BYTE_QUERY)
+            .unwrap();
+        assert!(RandomVectorScorer::to_string(&*scorer)
+            .contains("Lucene99MemorySegmentByteVectorScorer@"));
+        let mut expected = default
+            .get_random_vector_scorer_byte(sim, bytes(&dir), &BYTE_QUERY)
+            .unwrap();
+        assert_eq!(scores(scorer.as_mut()), scores(expected.as_mut()));
+
+        let supplier = ms
+            .get_random_vector_scorer_supplier_byte(sim, bytes(&dir))
+            .unwrap();
+        assert!(RandomVectorScorerSupplier::to_string(supplier.as_ref())
+            .contains("Lucene99MemorySegmentByteVectorScorerSupplier@"));
+        let expected = default
+            .get_random_vector_scorer_supplier_byte(sim, bytes(&dir))
+            .unwrap();
+        assert_eq!(
+            supplier_scores(supplier.as_ref()),
+            supplier_scores(expected.as_ref())
+        );
+
+        // Heap slice: not a `MemorySegmentAccessInput`, so the delegate.
+        let scorer = ms
+            .get_random_vector_scorer_float(sim, floats(&memory), &FLOAT_QUERY)
+            .unwrap();
+        assert!(!RandomVectorScorer::to_string(&*scorer).contains("MemorySegment"));
+        let scorer = ms
+            .get_random_vector_scorer_byte(sim, bytes(&memory), &BYTE_QUERY)
+            .unwrap();
+        assert!(!RandomVectorScorer::to_string(&*scorer).contains("MemorySegment"));
     }
 
     /// `AbstractRandomVectorScorer.values()` on the two memory-segment

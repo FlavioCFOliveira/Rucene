@@ -763,13 +763,7 @@ mod scorer_tests {
             Ok(_) => panic!("the base must not produce a scorer"),
         };
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::UnsupportedOperation { .. }),
             "expected UnsupportedOperation, got {err:?}"
         );
         // The base also has no slice, the other thing Java's base answers.
@@ -790,13 +784,7 @@ mod scorer_tests {
             Ok(_) => panic!("an implementation that does not override must not score"),
         };
         assert!(
-            matches!(
-                err,
-                LuceneError {
-                    kind: LuceneErrorKind::UnsupportedOperation { .. },
-                    ..
-                }
-            ),
+            matches!(&err.kind, LuceneErrorKind::UnsupportedOperation { .. }),
             "expected UnsupportedOperation, got {err:?}"
         );
     }

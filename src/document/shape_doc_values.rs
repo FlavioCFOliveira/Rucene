@@ -2007,15 +2007,13 @@ mod tests {
     fn a_truncated_shape_doc_value_escapes_unwrapped_as_in_lucene() {
         let data = BytesRef::new(vec![VERSION, 1]);
         match ShapeDocValues::from_binary_value(data, ShapeCoordinateSystem::Geographic) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::Unchecked {
-                        class: "java.lang.ArrayIndexOutOfBoundsException",
-                        message: Some(message),
-                        cause: None,
-                    },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::Unchecked {
+                    class: "java.lang.ArrayIndexOutOfBoundsException",
+                    message: Some(message),
+                    cause: None,
+                } = &__lerr.kind =>
+            {
                 assert_eq!(message, "Index 2 out of bounds for length 2");
             }
             other => panic!("expected the unwrapped index failure, got {other:?}"),
@@ -2066,7 +2064,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
     }

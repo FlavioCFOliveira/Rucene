@@ -714,13 +714,7 @@ mod tests {
             .add_prox(1, Some(&mut positions), None)
             .expect_err("a negative length is not a length");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::CorruptIndex { .. }),
             "{error:?}"
         );
     }

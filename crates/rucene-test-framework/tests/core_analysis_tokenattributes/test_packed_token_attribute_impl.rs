@@ -9,9 +9,8 @@ use std::sync::Arc;
 use randomizedtesting::jdk::reflect::Class;
 use randomizedtesting::junit::Assert;
 use rucene::analysis::tokenattributes::{
-    CharTermAttribute, CharTermAttributeImpl, FlagsAttributeImpl, OffsetAttribute,
-    PackedTokenAttributeImpl, PositionIncrementAttribute, PositionLengthAttribute,
-    TermFrequencyAttribute, TypeAttribute,
+    CharTermAttribute, FlagsAttributeImpl, OffsetAttribute, PackedTokenAttributeImpl,
+    PositionIncrementAttribute, PositionLengthAttribute, TermFrequencyAttribute, TypeAttribute,
 };
 use rucene::analysis::{default_token_attribute_factory, StringCharReader};
 use rucene::error::Result;
@@ -99,11 +98,9 @@ fn test_packed_token_attribute_factory() -> Result<()> {
     Ok(())
 }
 
-/// The reflected map is keyed and valued as Rucene's `AttributeReflector`
-/// reports them (see `TestUtil.assertAttributeReflection`): the
-/// `CharTermAttribute` and `TermToBytesRefAttribute` keys under
-/// `CharTermAttributeImpl`'s type name, the others under
-/// `PackedTokenAttributeImpl`'s.
+/// The reflected map is keyed as Java's (`Attribute.class.getName() + "#" +
+/// key`) and valued as Rucene's `AttributeReflector` reports them (see
+/// `TestUtil.assertAttributeReflection`).
 fn test_attribute_reflection() -> Result<()> {
     let mut t = PackedTokenAttributeImpl::new();
     t.append_string(Some("foobar"));
@@ -112,20 +109,31 @@ fn test_attribute_reflection() -> Result<()> {
     t.set_position_length(11);
     t.set_type("foobar".to_string());
     t.set_term_frequency(42);
-    let packed = std::any::type_name::<PackedTokenAttributeImpl>();
-    let term = std::any::type_name::<CharTermAttributeImpl>();
+    let p = "org.apache.lucene.analysis.tokenattributes.";
     let mut expected: HashMap<String, String> = HashMap::new();
-    expected.insert(format!("{term}#term"), format!("{:?}", "foobar"));
     expected.insert(
-        format!("{term}#bytes"),
+        format!("{p}CharTermAttribute#term"),
+        format!("{:?}", "foobar"),
+    );
+    expected.insert(
+        format!("{p}TermToBytesRefAttribute#bytes"),
         format!("{:?}", BytesRef::new(b"foobar".to_vec())),
     );
-    expected.insert(format!("{packed}#startOffset"), "6".to_string());
-    expected.insert(format!("{packed}#endOffset"), "22".to_string());
-    expected.insert(format!("{packed}#positionIncrement"), "3".to_string());
-    expected.insert(format!("{packed}#positionLength"), "11".to_string());
-    expected.insert(format!("{packed}#type"), format!("{:?}", "foobar"));
-    expected.insert(format!("{packed}#termFrequency"), "42".to_string());
+    expected.insert(format!("{p}OffsetAttribute#startOffset"), "6".to_string());
+    expected.insert(format!("{p}OffsetAttribute#endOffset"), "22".to_string());
+    expected.insert(
+        format!("{p}PositionIncrementAttribute#positionIncrement"),
+        "3".to_string(),
+    );
+    expected.insert(
+        format!("{p}PositionLengthAttribute#positionLength"),
+        "11".to_string(),
+    );
+    expected.insert(format!("{p}TypeAttribute#type"), format!("{:?}", "foobar"));
+    expected.insert(
+        format!("{p}TermFrequencyAttribute#termFrequency"),
+        "42".to_string(),
+    );
     TestUtil::assert_attribute_reflection(&t, &expected);
     Ok(())
 }

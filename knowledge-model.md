@@ -10,8 +10,11 @@ The knowledge graph of the **Rucene** project (roadmap `rucene`, reached through
    `lucene/codecs`, `lucene/test-framework` and **randomizedtesting 2.8.1**
    (`randomized-runner`), the module sprint 12 adds, `lucene/analysis/common`, and
    the modules sprint 13 adds, `lucene/queries`, `lucene/queryparser` and
-   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`):
-   packages, files, types, members, dependencies; for `lucene/core` also bytecode
+   `lucene/sandbox` (only its listed source files, `Module.scopeFiles`), and the
+   modules sprint 17 adds, `lucene/memory`, `lucene/facet`, `lucene/highlighter`,
+   `lucene/spatial3d`, `lucene/spatial-extras`, `lucene/spatial-test-fixtures`,
+   `lucene/benchmark`, and the listed source files of **spatial4j 0.8** and
+   **s2-geometry-library-java 1.0.0**: packages, files, types, members, dependencies; for `lucene/core` also bytecode
    calls and its test surface;
 3. **the port between them**: which Lucene type each Rust item ports and on what
    evidence, which Rust skeleton stands for a type not yet ported and which task
@@ -29,31 +32,24 @@ Two rules make the graph an answer rather than an impression (`CLAUDE.md` §7, �
 * **Every claim states its basis.** A `PORTS` edge carries `evidence`; a depth figure
   carries `memberEvidence`; a scope decision carries `portScopeRule`; a hand
   correction carries `portStateNote`; a member verdict carries its rule.
-* **The graph is checked against the code, not against its own loaders.**
-  `tools/kg/audit_kg.py` re-derives the census from the Lucene clone, the compiler's
-  view of the crate, `git` and `rmp`; `problems: 0` is the pass condition.
+* **The graph is checked against the code, not against its own loaders.** Every
+  `tools/kgsync` run re-derives its slices from the sources (the Java and Rust ASTs,
+  the doc comments, `git`, `rmp`) and writes the difference; `kgsync --full --dry-run`
+  reporting `+0 ~0 -0` is the pass condition.
 
 ---
 
 ## Using the graph during development
 
-* **Keep it current.** After every commit, `tools/kg/sync_commit.sh <commit>` surveys
-  the commit from a `git archive` export (the working tree may hold uncommitted
-  work), runs the whole chain (*Reproducing the graph*), and ends with the audit. The
-  log, `<kg-target>/kg_sync_<short>.log`, times every step.
-* **Ask the graph first.** `tools/kg/ask.py` runs the statements of *Answering the
-  standing questions* by name, with escaped inputs, and prints JSON lines:
-  `status` (is the graph current?), `divergences --file <path>` / `--type <fqn>`,
-  `item <name>`, `refs <qualifiedName>`, `lucene-callers <fn qualifiedName>`,
-  `no-caller [--subsystem S] [--unverified]`, `awaits`, `absent`, `tasks`,
-  `coverage [--module M] [--list]` (in-scope classes per module and status), `early
-  [--module M]` (members ported early under the cycle rule), `plans --class <fqn>` /
-  `plans --task N` (which task ports a class; which classes a task ports),
-  `skeletons [--module M]` (classes with a skeleton and no port), and
-  `cypher "<statement>"` for anything else.
+* **Keep it current.** After every commit, run `tools/kgsync` (*Synchronisation*): it
+  re-derives only the layers whose inputs changed and writes only the difference.
+* **Ask the graph first.** Run the statements of *Answering the standing questions*
+  with `rmp graph client -r rucene`. The `ask.py` helper those sections name was
+  retired with `tools/kg`.
 * **Read a property's maintainer before trusting it.** Each label below says which
-  tool writes it. A label marked *curated* is written by hand when its fact arises; no
-  sync step completes it, so its absence proves nothing.
+  tool writes it, and *Synchronisation* lists what `tools/kgsync` maintains. A label
+  marked *curated* is written by hand when its fact arises; no sync step completes it,
+  so its absence proves nothing.
 
 ---
 
@@ -68,17 +64,20 @@ A software project or library being modelled. Identity: `name` (string).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"Rucene"`, `"Apache Lucene Core 10.5.0"` or `"randomizedtesting 2.8.1"`. |
+| `name` | `"Rucene"`, `"Apache Lucene Core 10.5.0"`, `"randomizedtesting 2.8.1"`, `"spatial4j 0.8"` or `"s2-geometry-library-java 1.0.0"`. |
 | `language` | Primary language: `"Rust"`, `"Java"`. |
 | `version` | Version string, e.g. `"10.5.0"`. |
 | `path` | Root path, for the local project. |
 | `referenceUrl` | Authoritative source URL for an external project. |
-| `syncedCommit` / `syncedDate` | On `Rucene`: the commit of the last `sync_commit.sh` run whose audit passed, written as its last step. `tools/kg/ask.py status` compares it with `HEAD`. |
+| `syncedCommit` / `syncedDate` | On `Rucene`: the commit of the last completed `tools/kgsync` run, written as its last step. |
+| `kgsyncRust` / `kgsyncJava` / `kgsyncMap` / `kgsyncGit` | On `Rucene`: the input fingerprint of each layer at its last run; an unchanged fingerprint skips the layer. |
 
 ### `Module`
 A crate or Maven module: the crate `rucene` and each workspace member crate under
 `crates/` (named by its Cargo package), every module of the Lucene 10.5.0 distribution
-that ships Java sources, and randomizedtesting 2.8.1's `randomized-runner`, so the
+that ships Java sources, randomizedtesting 2.8.1's `randomized-runner`, and the
+external libraries spatial4j 0.8 (`spatial4j/spatial4j`) and s2-geometry-library-java
+1.0.0 (`s2-geometry/s2-geometry-library-java`), so the
 port's denominator is explicit (`CLAUDE.md` §6.1). Identity: `name` (string). Written
 by `tools/kg/lucene_modules_kg.py` (the Lucene inventory), `tools/kg/port_modules_kg.py`
 (the port modules, from its `PORT_MODULES`) and `load_rucene_kg.py` (the crates; a
@@ -86,18 +85,18 @@ member crate the survey no longer has is pruned).
 
 | Property | Purpose |
 |---|---|
-| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, … |
+| `name` | `"rucene"`, `"rucene-codecs"`, `"lucene/core"`, `"lucene/analysis/common"`, `"lucene/queryparser"`, `"randomizedtesting/randomized-runner"`, `"spatial4j/spatial4j"`, `"s2-geometry/s2-geometry-library-java"`, … |
 | `shortName` | The path under `lucene/` (`"core"`), or under the randomizedtesting repository (`"randomized-runner"`). |
 | `kind` | `"crate"`, `"maven-module"`. |
-| `path` | Root path in the source tree. |
+| `path` | Root path in the source tree (`"."` for a library whose clone is the module). |
 | `project` | The owning `Project.name`. |
 | `javaFiles` | Java source files the module declares at the surveyed tag (its first source tree), whether or not all are in scope. |
 | `inScope` | `true` for a module the port covers, whole or in part (`scopeFiles`). |
-| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"outside-the-port-modules"`. |
-| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"`): those files' paths, relative to the repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
+| `scopeRule` | The rule that set `inScope`: `"lucene-core-is-the-port-target"`, `"sprint-9-ports-the-module"`, `"sprint-12-ports-the-module"`, `"sprint-13-ports-the-module"`, `"sprint-13-ports-listed-files"`, `"sprint-17-ports-the-module"`, `"sprint-17-ports-listed-files"`, `"outside-the-port-modules"`. |
+| `scopeFiles` | On a port module scoped to listed source files (`scopeRule` `"sprint-13-ports-listed-files"` or `"sprint-17-ports-listed-files"`): those files' paths, relative to the module's repository root, `", "`-separated. Only they (and the module's JPMS descriptor) are surveyed, scoped and censused; no other type of the module is a `Class`. Absent on a module ported whole. |
 | `role` | What the module is, in one line. |
 | `crate` / `cratePath` | On a port module: the Cargo package that ports it and its directory (`"."` for `rucene`). |
-| `jpmsName` | On a port module: its JPMS module name (randomizedtesting's is the automatic name of its jar, `randomizedtesting.runner`). |
+| `jpmsName` | On a port module: its JPMS module name (a module without a descriptor carries the automatic name of its jar: `randomizedtesting.runner`, `spatial4j`, `s2.geometry.library.java`, `lucene.spatial.test.fixtures`). |
 
 ### `Package`
 A Java package. Identity: `name` (string).
@@ -112,7 +111,9 @@ A Java package. Identity: `name` (string).
 ### `Class`
 A Java type of a port module (`lucene/core`, `lucene/codecs`, `lucene/test-framework`,
 `randomizedtesting/randomized-runner`, `lucene/analysis/common`, `lucene/queries`,
-`lucene/queryparser`, and of `lucene/sandbox` the types its `scopeFiles` declare) — class, interface, enum, record, exception or
+`lucene/queryparser`, the seven sprint-17 Lucene modules, and of `lucene/sandbox`,
+`spatial4j/spatial4j` and `s2-geometry/s2-geometry-library-java` the types their
+`scopeFiles` declare) — class, interface, enum, record, exception or
 annotation; `kind` tells them apart. (`Interface`, `Enum`, `Exception` and `Annotation`
 are reserved labels that no loader writes.) Identity: `qualifiedName` (string); a nested
 type is keyed `pkg.Outer$Inner`. Written by the Lucene survey (`extract_lucene_kg.py`,
@@ -153,6 +154,8 @@ port loaders named below.
 | `in` | `sprint-12-module-top-level` | A top-level type declared by a file of `lucene/analysis/common` (`src/java`). |
 | `in` | `sprint-13-module-top-level` | A top-level type declared by a file of `lucene/queries` or `lucene/queryparser` (`src/java`). |
 | `in` | `sprint-13-listed-file-top-level` | A top-level type declared by a file a port module lists in `scopeFiles` (`lucene/sandbox`). |
+| `in` | `sprint-17-module-top-level` | A top-level type declared by a file of `lucene/memory`, `lucene/facet`, `lucene/highlighter`, `lucene/spatial3d`, `lucene/spatial-extras`, `lucene/spatial-test-fixtures` or `lucene/benchmark` (`src/java`). |
+| `in` | `sprint-17-listed-file-top-level` | A top-level type declared by a file `spatial4j/spatial4j` or `s2-geometry/s2-geometry-library-java` lists in `scopeFiles`. |
 | `nested` | `nested-in-enclosing-type` | An inner type; not an independent port unit. Each carries its own measured `portState`. |
 | `out` | `not-a-lucene-core-type` | Anything else carrying the label, such as Rucene's own Java test fixtures. |
 
@@ -276,15 +279,15 @@ A source, build, documentation or configuration file of either side. Identity: `
 
 ### `RustStruct`, `RustTrait`, `RustEnum`, `RustAlias`
 A type declared by the crate; `RustAlias` is a module-level `type X = …;`. Identity:
-`{name, file}` (strings), so same-named types of different modules stay distinct.
-Written by `extract_rucene_kg.py` → `load_rucene_kg.py`, which also deletes the nodes a
-survey no longer confirms.
+`qualifiedName` (string, unique), the compiler's module path of the declaration.
+Written by the `rust` layer of `tools/kgsync` (`origin: "source"`), which also deletes
+the nodes the sources no longer declare.
 
 | Property | Purpose |
 |---|---|
-| `name` | Type name (identity, with `file`). |
-| `file` | Declaring file (identity, with `name`). |
-| `qualifiedName` | `rucene::<module path>::<Name>`, or `<test crate>::…`. |
+| `name` | Type name. |
+| `file` | Declaring file. |
+| `qualifiedName` | `<crate>::<module path>::<Name>` (identity), the module path the compiler gives the declaration; integration tests use their test crate. |
 | `kind` | `"struct"`, `"trait"`, `"enum"`, `"union"`, `"alias"`. |
 | `visibility` | `"pub"` (including `pub(crate)`) or `"private"`. |
 | `scope` | `"crate"`, or `"test"` for an item gated by `#[cfg(test)]` on its module or itself. |
@@ -471,7 +474,7 @@ A test method of a `TestClass`: `public void testXxx()` or a `void` method carry
 | `PORTS` | Rucene item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`/`Component`) → Lucene `Class`. **`evidence` is mandatory**: `"doc-comment"` (the item's doc says `Equivalent to \`org.apache.lucene.X\`` or a lead-in of that family, or the module's `\| Rucene \| Apache Lucene Core 10.5.0 \|` table names it) or `"curated"`. `"host-file-name"` (a nested type of a module beyond `lucene/core`: a Rust type of its own name in a file porting an enclosing type; written whole by `port_coverage_kg.py --phase scope`). `declaredAt` gives `file:line`, or the file alone with `declarationSource: "macro-expansion"`. `claimLevel: "member"` and `declaredMember` mark a claim naming a member. Optional `note`: a partial port or adaptation. |
 | `PORTS_CANDIDATE` | Rust type → `Class`: exactly one Rust type has the same simple name; `evidence: "exact-name-match"`. Unverified; superseded by a `PORTS`. Never written to a `skeleton` type. |
 | `SKELETON_OF` | Rust item (`RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn`) → Lucene `Class` (top-level or nested): the item's doc holds the paragraph ``Skeleton of `<fully qualified Java type>`; ported by rmp task #N.``, so the item is where the type's port lives, and the port is not done. Not a port: it never yields `PORTS`. `evidence: "doc-comment"`; `declaredAt`: `file:line`; `task` (integer): `N`. Written whole by `port_evidence_kg.py --phase load`. |
-| `PLANS_PORT` | `Task` → `Class`: the task a skeleton names as the one that ports the type. `evidence: "skeleton-doc-comment"`; `declaredAt`: the skeleton's `file:line`. Written whole with `SKELETON_OF`, for a task the graph mirrors. |
+| `PLANS_PORT` | `Task` → `Class`: the task planned to port the type. `evidence: "skeleton-doc-comment"` — the task a skeleton names; `declaredAt`: the skeleton's `file:line`. `evidence: "scope-plan"` — for a module ported without skeletons, the task `port_modules_kg.SCOPE_PLANS` assigns to the type's module or file (a top-level type); `declaredAt`: `tools/kg/port_modules_kg.py SCOPE_PLANS`; a pair a skeleton plans keeps the skeleton's evidence. Written whole with `SKELETON_OF`, for a task the graph mirrors. |
 | `PORTS_EARLY` | *Curated.* `Task` → `Method`: under the cycle rule of a module beyond `lucene/core` (sprint 9's), the task ported this member in full before the task that owns its class. `ownerTask` (integer): that later task; `rustItem`: the Rust item's `qualifiedName`; `evidence: "cycle-rule"`. Written by `port_modules_kg.py --phase early`; no sync deletes it. |
 | `PORT_UNIT` | `TestClass` → `Class` of the same `qualifiedName`: the framework type's port-scope node (`port_modules_kg.py`). |
 | `SUPERSEDES` | `Decision` → `Decision` it replaced; `on`: the date of the replacing decision. |
@@ -881,63 +884,35 @@ ORDER BY size(waiting) DESC
 
 ## Indexes and constraints
 
-Every index this engine can use (rmp 1.18.0) is a hash index on one node property, so
-it serves **equality lookups only**. Each label carries one on its identity property,
-because the sync tools and ad hoc queries bind nodes by identity in
-`MATCH (n:L {k: …})` and `MERGE (n:L {k: …})`; without it a `MERGE` walks the whole
-label for every row of a batch.
+Every label's identity property carries a **`UNIQUE` constraint**, named
+`uniq_<label>_<property>`. On this engine a `UNIQUE` constraint is backed by a hash
+index (`__uniq__<Label>.<property>` in `SHOW INDEXES`), and that index serves every
+equality lookup on the identity, so no plain index is declared beside it.
+`kgsync --schema` declares the constraints (after checking that no value is duplicated)
+and drops the plain indexes they supersede.
 
-| Index | Label | Property |
-|---|---|---|
-| `idx_class_qualifiedname` | `Class` | `qualifiedName` |
-| `idx_method_qualifiedname` | `Method` | `qualifiedName` |
-| `idx_rustfn_qualifiedname` | `RustFn` | `qualifiedName` |
-| `idx_testmethod_qualifiedname` | `TestMethod` | `qualifiedName` |
-| `idx_testclass_qualifiedname` | `TestClass` | `qualifiedName` |
-| `idx_file_path` | `File` | `path` |
-| `idx_task_id` | `Task` | `id` |
-| `idx_commit_hash` | `Commit` | `hash` |
-| `idx_module_name` | `Module` | `name` |
-| `idx_package_name` | `Package` | `name` |
-| `idx_project_name` | `Project` | `name` |
-| `idx_component_name` | `Component` | `name` |
-| `idx_decision_name` | `Decision` | `name` |
-| `idx_defect_name` | `Defect` | `name` |
-| `idx_feature_name` | `Feature` | `name` |
-| `idx_ruststruct_name` | `RustStruct` | `name` |
-| `idx_rusttrait_name` | `RustTrait` | `name` |
-| `idx_rustenum_name` | `RustEnum` | `name` |
-| `idx_rustalias_name` | `RustAlias` | `name` |
-| `idx_divergence_id` | `Divergence` | `id` |
-| `idx_testresource_path` | `TestResource` | `path` |
+| Label | Identity (UNIQUE) |
+|---|---|
+| `Project`, `Module`, `Package`, `Component`, `Decision`, `Defect`, `Feature` | `name` |
+| `File`, `TestResource` | `path` |
+| `Class`, `Method`, `TestClass`, `TestMethod`, `RustStruct`, `RustTrait`, `RustEnum`, `RustAlias`, `RustFn` | `qualifiedName` |
+| `Divergence` | `id` |
+| `Task` | `id` (integer) |
+| `Commit` | `hash` |
 
-The Rust type labels' identity is `{name, file}`; the engine rejects composite indexes,
-so the index covers `name`, the selective half. `divergences_kg.py` creates
-`idx_divergence_id` if it is missing. Create an index with `CREATE INDEX <name> IF NOT
-EXISTS FOR (n:<Label>) ON (n.<property>)`; list them with `SHOW INDEXES`.
+**Proof that the constraint index is used** (re-run after an engine upgrade):
+`EXPLAIN MATCH (c:Class {qualifiedName:'org.apache.lucene.index.IndexWriter'}) RETURN c`
+plans `NodeByIndexSeek`, and the integer `Task.id` plans `NodeByIndexRangeScan`.
 
-**Proof that an index is used** (re-run after an engine upgrade):
-`PROFILE MATCH (c:Class {qualifiedName:'org.apache.lucene.index.IndexWriter'}) RETURN c`
-must plan `NodeByIndexSeek`, not `NodeByLabelScan` + `Filter`; the integer `Task.id`
-plans `NodeByIndexRangeScan`; a batched `UNWIND … MERGE (m:TestMethod {qualifiedName:
-qn})` shows a `Merge` operator with no label scan beneath it.
+**What the index does not serve (rmp 1.21.0, measured).**
 
-**An index serves a literal key and a `MERGE`, not a `MATCH` keyed by a row.**
-`UNWIND … AS row MATCH (m:Method {qualifiedName: row.qn})` plans one
-`NodeByLabelScan` of the label and a `HashJoin` per statement, whatever the batch size
-(also with `WITH row.qn AS qn`); `UNWIND … MERGE (m:Method {qualifiedName: row.qn})`
-uses the index. A batched labelled `MATCH` therefore costs one label scan per
-statement, which only a larger batch amortises; no index can remove it. Re-measure with
-`PROFILE` after an engine upgrade.
-
-**No index serves an unlabelled node.** `MATCH (t {name: row.name, file: row.file})`
-and `MATCH (n) WHERE id(n) = row.id` scan every node for every row. The sync tools
-route the Rust item pattern through `kgio.unwind_items`, which binds it with each
-label its `(name, file)` carries.
-
-**Constraints:** none are declared. Before declaring `IS UNIQUE` on an identity
-property, this must return 0: `MATCH (n:<Label>) WITH n.<property> AS v, count(*) AS c
-WHERE c > 1 RETURN count(v)`.
+* `UNWIND … MATCH (n:L {k: row.k})` plans one label scan per statement, which only a
+  larger batch amortises.
+* `SET n += {…}` after a literal identity `MATCH` turns the seek into a label scan per
+  clause. Write explicit `SET n.p = …` assignments.
+* `DELETE` / `DETACH DELETE` never uses the index. Tag the nodes through the index
+  (`SET n:KgTomb`), then delete the tagged label in bounded batches.
+* No index serves an unlabelled node: always bind the label.
 
 ---
 
@@ -972,10 +947,13 @@ the forward edge's type for a reverse traversal, so write every read outgoing.
 ## Provenance convention
 
 Every node and edge carries `gitCommit` (full 40-char hash) and `gitDate`
-(`YYYY-MM-DD`): the commit at which the fact was last confirmed. For a node describing
-the Lucene source, it is the local Rucene commit at which it was registered. A sync
-stamps only what it re-derived: stamping a fact it did not re-verify would be a false
-claim. The audit fails on a node without a stamp. Unstamped edges, by type:
+(`YYYY-MM-DD`). `tools/kgsync` stamps an element when it creates or changes it, so the
+stamp is the commit at which the element took its current value. An element a run
+re-derives unchanged keeps its stamp: rewriting every stamp on every commit would turn
+a sync that writes the difference into one that writes the whole graph. That every
+maintained element is current at a commit is stated once, by
+`Project {name:'Rucene'}.syncedCommit`. For a node describing the Lucene source, the
+stamp is the local Rucene commit at which it was registered. Unstamped edges, by type:
 
 ```cypher
 MATCH ()-[e]->() WHERE e.gitCommit IS NULL
@@ -984,68 +962,50 @@ RETURN type(e) AS edge, count(e) AS unstamped ORDER BY unstamped DESC
 
 ---
 
-## Reproducing the graph
+## Synchronisation — `tools/kgsync`
 
-**One commit:** `tools/kg/sync_commit.sh <commit> [roadmap]`. The order is fixed by
-what each step reads:
+The graph is kept equal to the sources by `tools/kgsync` (Rust; usage, design and the
+engine measurements behind it in `tools/kgsync/README.md`). It replaced the
+`tools/kg` chain on 2026-11-24. Every run computes, from the primary sources, the
+desired state of the slices it owns, reads each slice's current state in one labelled
+statement, and writes only the difference. An unchanged layer is skipped by its input
+fingerprint; `--full` re-derives and verifies every layer.
 
-0. `port_modules_kg.py --phase modules`, `--phase structure` — the port modules'
-   scope, JPMS dependencies and scope decisions, and the packages of every module beyond `lucene/core`,
-   files, types and members (needs the randomizedtesting 2.8.1 clone,
-   `$RANDOMIZEDTESTING_ROOT`).
-1. `extract_rucene_kg.py --expand` → `load_rucene_kg.py` — the crate survey (the root
-   crate and every `crates/<dir>` member), and the prune of nodes it no longer
-   confirms.
-2. `port_coverage_kg.py` — `portScope`, `portState`, Lucene `DEPENDS_ON`,
-   `PORTS_CANDIDATE`, the `Task` mirror and its prune, `REQUIRES_PORT`.
-3. `port_evidence_kg.py --phase extract`, `--phase load` — the declared `PORTS`, then
-   `SKELETON_OF` and `PLANS_PORT` (after the `Task` mirror of step 2);
-   `expanded_evidence_kg.py` — the same for macro-generated items.
-4. `nested_port_kg.py` — `lucene/core`'s nested types' `portState` (needs step 3).
-5. `port_coverage_kg.py --phase scope --source-root <export>` (the added modules'
-   nested types and their `host-file-name` `PORTS`), then `port_evidence_kg.py --phase
-   depth` — the depth floor, nested types with a type-level port included (needs the
-   scope phase) — then `port_coverage_kg.py --phase candidates` (separate invocations).
-   `port_modules_kg.py --phase coverage` prints the per-module coverage.
-6. `triage_dump.py` → `triage_repro.py` (fails unless it reproduces the graph's
-   `memberMatched`) → `triage_members.py` → `triage_load.py` — the member triage.
-7. `rmp_closings.py` → `commits_kg.py --closings` — the commit history and task edges.
-8. `rust_refs_kg.py` → `no_caller_kg.py` → `no_caller_verdicts_kg.py` — crate
-   references, `PORTS_MEMBER`, the no-caller list and the #269 verdicts.
-9. `divergences_kg.py` — the declared divergences; `lucene_tests_kg.py --phase
-   framework` — the port modules' own tests and resources and their counterparts.
-10. `audit_kg.py --commit <commit>` — `problems: 0`.
+| Layer | Source | Owns (labels, predicates, properties) |
+|---|---|---|
+| `rust` | `syn` AST, module tree followed from every Cargo target | Rust `File` (`name`, `kind`, `language`, `modulePath`, `crate`, `loc`); `RustStruct`/`RustTrait`/`RustEnum`/`RustAlias`/`RustFn` with `origin: "source"` (`name`, `file`, `kind`, `visibility`, `scope`, `origin`, `language`; on `RustFn` also `owner`, `signature`); `DECLARES` (`File` → item, type → `RustFn`); `IMPLEMENTS` (type → crate `RustTrait`); `DEPENDS_ON` (Rust `File` → `File`, from `use`); `CONTAINS` (crate `Module` → `File`) |
+| `java` | javac AST of every `Module {kind: 'maven-module'}` (roots in `tools/kgsync/references.json`; scope from `Module.scopeFiles` or every source root under `src/` but the test trees) | `Package` (`path`, `shortName`); Java `File` (`name`, `kind`, `module`, `package`, `loc`); `Class` (`name`, `kind`, `file`, `module`, `package`, `parentQualifiedName`, `javaVisibility`); `Method` (`name`, `kind`, `modifiers`, `parentQualifiedName`, `returnType`, `signature`); `TestClass`/`TestMethod` of `src/test`; `CONTAINS`, `DECLARES`, `NESTED_IN`, `EXTENDS`, `IMPLEMENTS`, `DEPENDS_ON` between them |
+| `map` | the crate's doc comments, joined with both ASTs | `PORTS` and `SKELETON_OF` with `evidence: "doc-comment"` (no `declarationSource`); `PLANS_PORT` with `evidence: "skeleton-doc-comment"`; `Divergence` and its `DECLARED_IN`, `CONCERNS`, `DIVERGES_FROM`; `PORTS_MEMBER` with `evidence: "name-mapping"` |
+| `git` | `git log`; the roadmap store, read-only | `Commit` (`message`, `date`, `task_id`), `Task` (`name`, `status`, `priority`), `COMMITTED_IN` (`File` → `Commit`), `CLOSES_TASK`, `REFERENCES_TASK` |
 
-**From an empty store:** the Lucene half first (`lucene_modules_kg.py`,
-`extract_lucene_kg.py` + `run_kg_batches.py`, `enrich_lucene_kg.py` +
-`lucene_structure_kg.py`, `lucene_calls_kg.py`, `lucene_tests_kg.py`), then the chain
-above; `tools/kg/README.md` gives the arguments.
+Everything else is not maintained by a sync: the Lucene bytecode layers (`CALLS`,
+`OVERRIDES`, `Method.overridesExternal`), the scope, depth and triage properties of
+`Class`/`Method`, the #269 verdicts, `REFERENCES`, `Component`, `Decision`, `Defect`,
+`Feature`, `TestResource`, `PORTS` with any other `evidence`, `PORTS_CANDIDATE`,
+`PORTS_EARLY`, `PORT_UNIT`, `AWAITS_CALLER` and `COVERED_BY`. Read their values as
+last written. The attributions to `tools/kg/*.py` in the label sections above name the
+retired chain that wrote them.
 
-## What the audit checks
+**Rules the sync applies.**
 
-`tools/kg/audit_kg.py`, after every sync; `problems: 0` is the pass condition. Each
-check compares the graph with a source it re-derives independently:
+* **Rust module paths are the compiler's.** A file's module path follows the `mod`
+  declarations from its target root (`#[path]` honoured). Integration-test files carry
+  their test crate (`core_index_tests::…`). Two same-named test targets of different
+  packages are qualified `name@package`.
+* **Port claims.** A paragraph whose first sentence holds a claim phrase ("Equivalent
+  to", "Port of", "Ported from", "The declaration of", "Lucene Core equivalent", …)
+  followed within six words by a backticked reference is a claim. The reference is
+  resolved as a fully qualified name, as `Outer.Inner`, or as a simple name that is
+  unique (or unique among the packages the module doc names). A `#member` or a dotted
+  member makes it `claimLevel: "member"` with `declaredMember`. A module-level (`//!`)
+  claim lands on the file's item named like the class. A module table
+  (`| Rucene | Apache Lucene Core 10.5.0 |`) maps each row.
+* **Member mapping.** A `RustFn` maps by name (`snake_case` → `camelCase`, `new` → the
+  constructors) to the members (methods, constructors, fields) of the class its owner
+  ports (`via: "owner"`). Otherwise it maps to the nearest Lucene ancestor that declares
+  the name (`"inherited"`). A member claim maps to its member (`"declared"`). A free
+  function maps to the classes its file's types port (`"free-fn"`).
 
-* **Lucene and randomizedtesting:** per port module, Java files and top-level types
-  (a module scoped to listed files is censused over those alone, and has no `Class`
-  declared by another of its files); over all of them, top-level and nested types (a brace-depth scanner written
-  independently of the extractor); registered modules; the in-scope modules equal
-  `PORT_MODULES`; every in-scope or nested `Class` has a `module`; every
-  `PORTS_EARLY` member belongs to a type of a module beyond `lucene/core`.
-* **Crate:** `.rs` files, types and functions (from the compiler's own expansion), and
-  no type the compiler sees that the graph lacks.
-* **Port state:** every `Class` has a `portScope`; every nested type a measured state
-  and every unported one a destination; every `PORTS` edge has `evidence`; no type has
-  both `PORTS` and `PORTS_CANDIDATE`; no nested `ported` without a `PORTS`; no `PORTS`
-  from a node the survey does not confirm.
-* **Skeletons, both ways:** every skeleton paragraph of the crate (re-read from the
-  surveyed tree) is an item doc, names an in-scope or nested `Class` and a `Task`, and
-  has its `SKELETON_OF` and `PLANS_PORT`; every such edge has its paragraph; every
-  `skeleton` class has a `SKELETON_OF`; in a module whose `PORT_MODULES` entry sets
-  `skeletons`, no class has more than one skeleton, and the classes with neither a
-  skeleton nor a port are counted — reported under `"report"`, a failure under
-  `"enforce"`.
-* **Provenance:** at least the surveyed commit's history is mirrored; every node is
-  stamped.
-* **Mirrors:** `Task` nodes equal `rmp`'s tasks in both directions; `Divergence` nodes
-  equal the crate's declared paragraphs in both directions.
+**Is the graph current?** `MATCH (p:Project {name:'Rucene'}) RETURN p.syncedCommit`
+equals `git rev-parse HEAD` after a sync. A drift check is
+`kgsync --full --dry-run`, which must report `+0 ~0 -0`.

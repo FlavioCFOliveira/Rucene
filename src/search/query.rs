@@ -85,6 +85,23 @@ pub trait Query: Debug + Send + Sync + 'static {
         )))
     }
 
+    /// [`create_weight`](Self::create_weight) for a query the caller holds by
+    /// shared reference, so that the weight can keep that reference.
+    ///
+    /// PERF: Java's weights hold `Query.this`; a Rust weight built from
+    /// `&self` must copy the query instead. The default is exactly
+    /// `create_weight`; a query whose weight keeps it overrides this to keep
+    /// the shared reference.
+    #[doc(hidden)]
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        self.create_weight(searcher, score_mode, boost)
+    }
+
     /// Rewrites this query into primitive queries — for example a prefix query
     /// into a boolean query of term queries.
     ///
@@ -115,6 +132,40 @@ pub trait Query: Debug + Send + Sync + 'static {
     /// implementation of `MultiTermQuery` overrides it.
     fn is_multi_term_query(&self) -> bool {
         false
+    }
+
+    /// This query as a [`MultiTermQuery`](crate::search::multi_term_query::MultiTermQuery),
+    /// or `None` when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof MultiTermQuery` followed by the
+    /// cast `(MultiTermQuery) query`; every implementation of `MultiTermQuery`
+    /// overrides it with `Some(self)`.
+    fn as_multi_term_query(&self) -> Option<&dyn crate::search::multi_term_query::MultiTermQuery> {
+        None
+    }
+
+    /// This query as a [`TermQuery`](crate::search::TermQuery), or `None`
+    /// when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof TermQuery` followed by the cast
+    /// `(TermQuery) query`. The test matches `TermQuery` subclasses too (for
+    /// example `org.apache.lucene.facet.FacetQuery`), so `TermQuery` and every
+    /// port of a subclass override it with the `TermQuery` they are or extend.
+    fn as_term_query(&self) -> Option<&crate::search::TermQuery> {
+        None
+    }
+
+    /// This query as a
+    /// [`TermInSetQuery`](crate::search::term_in_set_query::TermInSetQuery), or
+    /// `None` when it is not one.
+    ///
+    /// Equivalent to Java's `query instanceof TermInSetQuery` followed by the
+    /// cast `(TermInSetQuery) query`. The test matches `TermInSetQuery`
+    /// subclasses too (for example `org.apache.lucene.facet.MultiFacetQuery`),
+    /// so `TermInSetQuery` and every port of a subclass override it with the
+    /// `TermInSetQuery` they are or extend.
+    fn as_term_in_set_query(&self) -> Option<&crate::search::term_in_set_query::TermInSetQuery> {
+        None
     }
 
     /// Query instance equivalence.
@@ -227,8 +278,12 @@ impl QueryKey {
 }
 
 impl PartialEq for QueryKey {
+    /// Java's hashed collections match a key by identity before `equals`:
+    /// `HashMap.getNode` tests `(k = e.key) == key || key.equals(k)`, so a
+    /// query is never asked to equal itself there. The same instance (one
+    /// `Arc`) is therefore equal without calling [`Query::query_eq`].
     fn eq(&self, other: &Self) -> bool {
-        self.0.query_eq(&*other.0)
+        Arc::ptr_eq(&self.0, &other.0) || self.0.query_eq(&*other.0)
     }
 }
 

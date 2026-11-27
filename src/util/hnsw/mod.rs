@@ -1516,13 +1516,9 @@ mod tests {
         let graph = OnHeapHnswGraph::new(4, 2);
         graph.add_node_shared(0, 0).expect("first add");
         let charged = graph.ram_bytes_used();
-        assert!(matches!(
-            graph.add_node_shared(0, 0),
-            Err(crate::error::LuceneError {
-                kind: crate::error::LuceneErrorKind::IllegalState { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(graph.add_node_shared(0, 0), Err(ref __lerr) if matches!(&__lerr.kind, crate::error::LuceneErrorKind::IllegalState { .. }))
+        );
         assert_eq!(graph.ram_bytes_used(), charged);
         assert_eq!(HnswGraph::size(&graph), 1);
     }

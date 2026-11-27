@@ -1740,11 +1740,14 @@ impl TestUtil {
     /// reports exactly `reflected_values`, keyed `"AttributeClass#key"`.
     ///
     /// **Divergence.** Core's
-    /// [`AttributeReflector`](rucene::util::attribute::AttributeReflector) reports a source-level
-    /// type name and a `Debug` value where Java reports the attribute
-    /// interface's `Class` and an `Object`; the map compared here is keyed by
-    /// that name, `#` and the key, with each value's `Debug` rendering, and
-    /// is printed in `java.util.HashMap`'s order.
+    /// [`AttributeReflector`](rucene::util::attribute::AttributeReflector) reports the
+    /// attribute interface's Java name (`Class.getName()`) and an
+    /// [`AttributeValue`](rucene::util::attribute::AttributeValue) where Java
+    /// reports the `Class` and an `Object`; the map compared here is keyed by
+    /// that name, `#` and the key, as Java's, with
+    /// each value's `Debug` rendering standing in for `Object.equals` (it
+    /// keeps the value's type: `"1"` and `1` differ), and is printed in
+    /// `java.util.HashMap`'s order.
     ///
     /// # Panics
     ///
@@ -1756,15 +1759,17 @@ impl TestUtil {
     ) {
         let mut map: HashMap<String, String> = HashMap::new();
         let mut order: Vec<String> = Vec::new();
-        att.reflect_with(&mut |_att_type: std::any::TypeId,
-                               att_class: &'static str,
-                               key: &str,
-                               value: &dyn std::fmt::Debug| {
-            let k = format!("{att_class}#{key}");
-            if map.insert(k.clone(), format!("{value:?}")).is_none() {
-                order.push(k);
-            }
-        });
+        att.reflect_with(
+            &mut |_att_type: std::any::TypeId,
+                  att_class: &'static str,
+                  key: &str,
+                  value: &dyn rucene::util::attribute::AttributeValue| {
+                let k = format!("{att_class}#{key}");
+                if map.insert(k.clone(), format!("{value:?}")).is_none() {
+                    order.push(k);
+                }
+            },
+        );
         if &map != reflected_values {
             let render = |m: &HashMap<String, String>, keys: &mut dyn Iterator<Item = String>| {
                 let mut java = JavaHashMap::new();

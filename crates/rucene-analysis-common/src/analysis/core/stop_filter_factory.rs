@@ -175,6 +175,20 @@ impl TokenFilterFactory for StopFilterFactory {
         Ok(Box::new(stop_filter))
     }
 
+    /// `create(input)` as an owned stage: a `StopFilter` over the same words
+    /// (`StopFilterFactory.java:89-93`).
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        let words = self.base.get_words().cloned().unwrap_or_else(|| {
+            rucene::store::java_nio_file::throw_unchecked(
+                "java.lang.NullPointerException",
+                Some("stopWords"),
+            )
+        });
+        Some(Ok(Box::new(
+            rucene::analysis::stop_filter::OwnedStopFilter::new(words),
+        )))
+    }
+
     fn as_resource_loader_aware(&mut self) -> Option<&mut dyn ResourceLoaderAware> {
         Some(self)
     }

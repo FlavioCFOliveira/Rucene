@@ -622,7 +622,7 @@ impl AttributeImpl for BytesRefBuilderTermAttributeImpl {
     fn reflect_with(&self, reflector: &mut dyn AttributeReflector) {
         reflector.reflect(
             TypeId::of::<dyn TermToBytesRefAttribute>(),
-            std::any::type_name::<BytesRefBuilderTermAttributeImpl>(),
+            "org.apache.lucene.analysis.tokenattributes.TermToBytesRefAttribute",
             "bytes",
             &self.get_bytes_ref(),
         );

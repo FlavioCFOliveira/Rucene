@@ -575,7 +575,10 @@ pub struct IntersectTermsEnum {
     /// `term` (`IntersectTermsEnum.java:200-202`).
     term: BytesRef,
     saved_start_term: Option<Vec<u8>>,
-    attributes: AttributeSource,
+    /// `BaseTermsEnum.atts`, created on the first
+    /// [`attributes`](TermsEnum::attributes) call as Java's is
+    /// (`BaseTermsEnum.java:40, 75-79`).
+    attributes: Option<AttributeSource>,
 }
 
 impl std::fmt::Debug for IntersectTermsEnum {
@@ -610,7 +613,7 @@ impl IntersectTermsEnum {
             current: None,
             term: BytesRef::default(),
             saved_start_term: None,
-            attributes: AttributeSource::new(),
+            attributes: None,
         };
         this.start()?;
         // for assert: `assert setSavedStartTerm(startTerm)` (`IntersectTermsEnum.java:116`)
@@ -829,8 +832,10 @@ impl IntersectTermsEnum {
         self.term.bytes.truncate(prefix);
         self.term.bytes.resize(prefix + len, 0);
         self.term.length = self.term.bytes.len();
-        let suffix: Vec<u8> = self.stack[cur].suffix_bytes[start..start + len].to_vec();
-        self.term.bytes[prefix..prefix + len].copy_from_slice(&suffix);
+        // PERF: the suffix is copied straight from the frame, as Java's
+        // `System.arraycopy` does, not through a temporary vector.
+        self.term.bytes[prefix..prefix + len]
+            .copy_from_slice(&self.stack[cur].suffix_bytes[start..start + len]);
     }
 
     /// Advances to the next entry, popping exhausted frames first.
@@ -965,7 +970,7 @@ impl std::fmt::Display for IntersectTermsEnum {
 
 impl TermsEnum for IntersectTermsEnum {
     fn attributes(&mut self) -> &mut AttributeSource {
-        &mut self.attributes
+        self.attributes.get_or_insert_with(AttributeSource::new)
     }
 
     fn next(&mut self) -> Result<Option<&BytesRef>> {

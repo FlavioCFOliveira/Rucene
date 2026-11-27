@@ -9,7 +9,8 @@ use crate::error::{LuceneError, Result};
 use crate::index::{sub_index_from_leaves, LeafReaderContext};
 use crate::search::collection_terminated_exception::{CollectionError, CollectionResult};
 use crate::search::collector::{Collector, LeafCollector};
-use crate::search::field_comparator::is_relevance_comparator;
+use crate::search::comparators::int_comparator::{IntComparator, IntLeafComparator};
+use crate::search::field_comparator::{is_relevance_comparator, SharedFieldComparator};
 use crate::search::field_doc::FieldDoc;
 use crate::search::field_value_hit_queue::{Entry, FieldValueHitQueue};
 use crate::search::index_searcher::IndexSearcher;
@@ -442,25 +443,42 @@ impl Collector for TopFieldCollector {
         }
         // `queue.getComparators(context)`, wrapped in a
         // `MultiLeafFieldComparator` when there are several.
-        let mut comparators = state.queue.get_leaf_comparators(context)?;
-        let reverse_mul = state.queue.get_reverse_mul();
-        let (comparator, reverse_mul): (Box<dyn LeafFieldComparator>, i32) =
+        // PERF: a single int sort field gets its concrete leaf comparator, so
+        // that the per-document calls dispatch statically (rmp #680; Java's
+        // JIT inlines the monomorphic `comparator` call site). The leaf
+        // comparator is built exactly as `getComparators(context)` builds it.
+        let single_int = match state.queue.get_comparators() {
+            [only] => only
+                .as_any()
+                .downcast_ref::<SharedFieldComparator<IntComparator>>()
+                .map(|int| int.int_leaf_comparator(context))
+                .transpose()?,
+            _ => None,
+        };
+        let reverse_mul = state.queue.get_reverse_mul().to_vec();
+        let (comparator, reverse_mul) = if let Some(int) = single_int {
+            (LeafComparator::Int(Box::new(int)), reverse_mul[0])
+        } else {
+            let mut comparators = state.queue.get_leaf_comparators(context)?;
             if comparators.len() == 1 {
                 (
-                    comparators
-                        .pop()
-                        .expect("INVARIANT: exactly one comparator was just counted"),
+                    LeafComparator::Dyn(
+                        comparators
+                            .pop()
+                            .expect("INVARIANT: exactly one comparator was just counted"),
+                    ),
                     reverse_mul[0],
                 )
             } else {
                 (
-                    Box::new(MultiLeafFieldComparator::new(
+                    LeafComparator::Dyn(Box::new(MultiLeafFieldComparator::new(
                         comparators,
-                        reverse_mul.to_vec(),
-                    )?),
+                        reverse_mul,
+                    )?)),
                     1,
                 )
-            };
+            }
+        };
 
         // Reset the minimum competitive score.
         state.min_competitive_score = 0.0;
@@ -537,6 +555,73 @@ impl TopDocsCollector for TopFieldCollector {
 /// `TopFieldCollector.TopFieldLeafCollector` together with the two anonymous
 /// subclasses that `SimpleFieldCollector.getLeafCollector` and
 /// `PagingFieldCollector.getLeafCollector` return.
+/// `TopFieldLeafCollector.comparator`, with the int leaf comparator held as its
+/// concrete type.
+///
+/// **Internal deviation.** Java holds a `LeafFieldComparator` and relies on the
+/// JIT to inline the monomorphic call site; here the single-int-field case is
+/// a separate variant whose calls dispatch statically. Every other sort goes
+/// through the trait object, as before.
+enum LeafComparator {
+    Int(Box<IntLeafComparator>),
+    Dyn(Box<dyn LeafFieldComparator>),
+}
+
+impl LeafComparator {
+    #[inline]
+    fn set_bottom(&mut self, slot: i32) -> Result<()> {
+        match self {
+            Self::Int(c) => c.set_bottom(slot),
+            Self::Dyn(c) => c.set_bottom(slot),
+        }
+    }
+
+    #[inline]
+    fn compare_bottom(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        match self {
+            Self::Int(c) => c.compare_bottom(doc, scorer),
+            Self::Dyn(c) => c.compare_bottom(doc, scorer),
+        }
+    }
+
+    #[inline]
+    fn compare_top(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<i32> {
+        match self {
+            Self::Int(c) => c.compare_top(doc, scorer),
+            Self::Dyn(c) => c.compare_top(doc, scorer),
+        }
+    }
+
+    #[inline]
+    fn copy(&mut self, slot: i32, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
+        match self {
+            Self::Int(c) => c.copy(slot, doc, scorer),
+            Self::Dyn(c) => c.copy(slot, doc, scorer),
+        }
+    }
+
+    fn set_scorer(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
+        match self {
+            Self::Int(c) => c.set_scorer(scorer),
+            Self::Dyn(c) => c.set_scorer(scorer),
+        }
+    }
+
+    fn competitive_iterator(&mut self) -> Result<Option<crate::search::CompetitiveIterator>> {
+        match self {
+            Self::Int(c) => c.competitive_iterator(),
+            Self::Dyn(c) => c.competitive_iterator(),
+        }
+    }
+
+    fn set_hits_threshold_reached(&mut self) -> Result<()> {
+        match self {
+            Self::Int(c) => c.set_hits_threshold_reached(),
+            Self::Dyn(c) => c.set_hits_threshold_reached(),
+        }
+    }
+}
+
 struct TopFieldLeafCollector<'a> {
     /// The collector's state, locked for as long as this leaf is collected.
     parent: MutexGuard<'a, TopFieldCollectorState>,
@@ -544,7 +629,7 @@ struct TopFieldLeafCollector<'a> {
     /// over the leaf comparators of a multi-field sort.
     ///
     /// Equivalent to `TopFieldLeafCollector.comparator`.
-    comparator: Box<dyn LeafFieldComparator>,
+    comparator: LeafComparator,
     /// `reverseMul[0]` for a single comparator, `1` for the
     /// `MultiLeafFieldComparator`, which applies the multipliers itself.
     ///
@@ -570,6 +655,8 @@ impl std::fmt::Debug for TopFieldLeafCollector<'_> {
 
 impl TopFieldLeafCollector<'_> {
     /// Equivalent to `TopFieldLeafCollector.countHit()`.
+    // PERF: per-document path of `collect`, kept in the doc loop (rmp #680).
+    #[inline(always)]
     fn count_hit(&mut self, scorer: &mut dyn Scorable) -> Result<()> {
         self.parent.total_hits += 1;
         let hit_count_so_far = self.parent.total_hits;
@@ -593,6 +680,7 @@ impl TopFieldLeafCollector<'_> {
     }
 
     /// Equivalent to `TopFieldLeafCollector.thresholdCheck(int)`.
+    #[inline(always)]
     fn threshold_check(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<bool> {
         if self.collected_all_competitive_hits
             || self.reverse_mul * self.comparator.compare_bottom(doc, scorer)? <= 0
@@ -617,6 +705,12 @@ impl TopFieldLeafCollector<'_> {
     }
 
     /// Equivalent to `TopFieldLeafCollector.collectCompetitiveHit(int)`.
+    ///
+    /// PERF: kept out of line, with [`collect_any_hit`](Self::collect_any_hit),
+    /// so that [`collect`](LeafCollector::collect), inlined into the doc loop of
+    /// `collect_stream`, carries only the counting and threshold path every
+    /// document takes (rmp #680).
+    #[inline(never)]
     fn collect_competitive_hit(&mut self, doc: i32, scorer: &mut dyn Scorable) -> Result<()> {
         // This hit is competitive: replace the bottom element of the queue and
         // adjust the top.
@@ -637,6 +731,7 @@ impl TopFieldLeafCollector<'_> {
     }
 
     /// Equivalent to `TopFieldLeafCollector.collectAnyHit(int, int)`.
+    #[inline(never)]
     fn collect_any_hit(
         &mut self,
         doc: i32,
@@ -671,6 +766,8 @@ impl LeafCollector for TopFieldLeafCollector<'_> {
         }
     }
 
+    // PERF: `#[inline]` alone left the call in the `collect_stream` loop.
+    #[inline(always)]
     fn collect(&mut self, doc: i32, scorer: &mut dyn Scorable) -> CollectionResult<()> {
         self.count_hit(scorer)?;
         match self.after_doc {

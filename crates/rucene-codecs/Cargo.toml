@@ -1,8 +1,8 @@
 [package]
 name = "rucene-codecs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of Apache Lucene 10.5.0 lucene/codecs (org.apache.lucene.codecs.* outside core)."

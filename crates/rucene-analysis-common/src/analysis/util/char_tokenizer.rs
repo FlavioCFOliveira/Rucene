@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use rucene::analysis::character_utils::{fill_buffer, new_character_buffer, CharacterBuffer};
 use rucene::analysis::{
-    default_token_attribute_factory, CharReader, CharTermAttribute, OffsetAttribute, Tokenizer,
-    TokenizerLogic, MAX_TOKEN_LENGTH_LIMIT,
+    default_token_attribute_factory, AttributeHandle, CharReader, CharTermAttribute,
+    OffsetAttribute, PackedTokenAttributeImpl, Tokenizer, TokenizerLogic, MAX_TOKEN_LENGTH_LIMIT,
 };
 use rucene::error::{LuceneError, Result};
 use rucene::util::attribute::{AttributeFactory, AttributeSource};
@@ -65,6 +65,39 @@ pub struct CharTokenizerAdapter<T: CharTokenizerLogic> {
     final_offset: i32,
     max_token_len: i32,
     io_buffer: CharacterBuffer,
+    /// `termAtt` and `offsetAtt`, resolved from the source on first use.
+    attributes: Option<CharTokenizerAttributes>,
+}
+
+/// `CharTokenizer`'s attribute fields (`CharTokenizer.java:94-95`), resolved
+/// once, as Java's `addAttribute` field initializers are.
+///
+/// PERF: held as handles, so a token costs no attribute lookup by type
+/// (rmp #679).
+#[derive(Debug)]
+struct CharTokenizerAttributes {
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+    offset_att: AttributeHandle<dyn OffsetAttribute>,
+    /// Whether one implementation provides both attributes, as the default
+    /// token attribute factory's `PackedTokenAttributeImpl` does, so that a
+    /// token is written under one borrow of it.
+    packed: bool,
+}
+
+impl CharTokenizerAttributes {
+    /// The handles of the attributes [`char_tokenizer_source`] added.
+    fn get(source: &AttributeSource) -> Self {
+        let term_att = AttributeHandle::get(source)
+            .expect("INVARIANT: the constructor added the CharTermAttribute");
+        let offset_att = AttributeHandle::get(source)
+            .expect("INVARIANT: the constructor added the OffsetAttribute");
+        let packed = term_att.same_impl_as(&offset_att);
+        Self {
+            term_att,
+            offset_att,
+            packed,
+        }
+    }
 }
 
 impl<T: CharTokenizerLogic> CharTokenizerAdapter<T> {
@@ -81,6 +114,7 @@ impl<T: CharTokenizerLogic> CharTokenizerAdapter<T> {
             max_token_len: DEFAULT_MAX_WORD_LEN,
             io_buffer: new_character_buffer(IO_BUFFER_SIZE)
                 .expect("INVARIANT: IO_BUFFER_SIZE is at least 2"),
+            attributes: None,
         }
     }
 
@@ -108,6 +142,120 @@ impl<T: CharTokenizerLogic> CharTokenizerAdapter<T> {
     pub fn logic(&self) -> &T {
         &self.logic
     }
+
+    /// The body of `incrementToken()` after `clearAttributes()`, writing the
+    /// token through `attributes`.
+    fn next_token(
+        &mut self,
+        attributes: &CharTokenizerAttributes,
+        input: &mut dyn CharReader,
+    ) -> Result<bool> {
+        if attributes.packed {
+            // PERF: the default factory's `PackedTokenAttributeImpl` is
+            // written through its concrete type, statically and inlined, as
+            // the JIT inlines Java's monomorphic attribute calls (rmp #679
+            // devirtualisation; same writes, same order). Any other
+            // implementation takes the `dyn` path below.
+            let mut att = attributes.term_att.borrow_impl_mut();
+            if let Some(packed) = att.as_any_mut().downcast_mut::<PackedTokenAttributeImpl>() {
+                return Ok(match self.scan_token(packed, input)? {
+                    Some((start_offset, end_offset)) => {
+                        packed.set_offset(start_offset, end_offset);
+                        true
+                    }
+                    None => false,
+                });
+            }
+        }
+        let span = self.scan_token(&mut *attributes.term_att.borrow_mut(), input)?;
+        Ok(match span {
+            Some((start_offset, end_offset)) => {
+                attributes
+                    .offset_att
+                    .borrow_mut()
+                    .set_offset(start_offset, end_offset);
+                true
+            }
+            None => false,
+        })
+    }
+
+    /// Reads the next token into `term_att`, returning its corrected start
+    /// and end offsets, or `None` at the end of the input.
+    fn scan_token<A: CharTermAttribute + ?Sized>(
+        &mut self,
+        term_att: &mut A,
+        input: &mut dyn CharReader,
+    ) -> Result<Option<(i32, i32)>> {
+        // `length` counts UTF-16 units, as Java's term length does;
+        // `term_len` counts the `char`s written into the term buffer.
+        let mut length: i32 = 0;
+        let mut term_len: usize = 0;
+        let mut start: i32 = -1; // this variable is always initialized
+        let mut end: i32 = -1;
+        let mut buffer_len = term_att.buffer().len();
+        loop {
+            if self.buffer_index >= self.data_len {
+                self.offset += self.data_len as i32;
+                // read supplementary char aware with CharacterUtils
+                fill_buffer(&mut self.io_buffer, input)?;
+                if self.io_buffer.length() == 0 {
+                    self.data_len = 0; // so next offset += dataLen won't decrement offset
+                    if length > 0 {
+                        break;
+                    } else {
+                        self.final_offset =
+                            Tokenizer::<Self>::correct_offset_of(Some(&*input), self.offset);
+                        return Ok(None);
+                    }
+                }
+                self.data_len = self.io_buffer.length();
+                self.buffer_index = 0;
+            }
+            // use CharacterUtils here to support < 3.1 UTF-16 code unit
+            // behavior if the char based methods are gone
+            let c = code_point_at(
+                self.io_buffer.buffer(),
+                self.buffer_index,
+                self.io_buffer.length(),
+            );
+            let char_count = char_count(c);
+            self.buffer_index += char_count;
+
+            if self.logic.is_token_char(c) {
+                // if it's a token char
+                if length == 0 {
+                    // start of token
+                    debug_assert!(start == -1);
+                    start = self.offset + self.buffer_index as i32 - char_count as i32;
+                    end = start;
+                } else if term_len >= buffer_len - 1 {
+                    // supplementary could run out of bounds?
+                    // make sure a supplementary fits in the buffer
+                    buffer_len = term_att.resize_buffer(2 + term_len).len();
+                }
+                end += char_count as i32;
+                // buffer it, normalized
+                term_att.buffer_mut()[term_len] = to_term_char(c);
+                term_len += 1;
+                length += char_count as i32;
+                // buffer overflow! make sure to check for >= surrogate
+                // pair could break == test
+                if length >= self.max_token_len {
+                    break;
+                }
+            } else if length > 0 {
+                // at non-Letter w/ chars
+                break; // return 'em
+            }
+        }
+
+        term_att.set_length(term_len);
+        debug_assert!(start != -1);
+        let corrected_start = Tokenizer::<Self>::correct_offset_of(Some(&*input), start);
+        self.final_offset = Tokenizer::<Self>::correct_offset_of(Some(&*input), end);
+        Ok(Some((corrected_start, self.final_offset)))
+    }
 }
 
 impl<T: CharTokenizerLogic> TokenizerLogic for CharTokenizerAdapter<T> {
@@ -118,93 +266,28 @@ impl<T: CharTokenizerLogic> TokenizerLogic for CharTokenizerAdapter<T> {
         input: &mut dyn CharReader,
     ) -> Result<bool> {
         source.clear_attributes();
-        // `length` counts UTF-16 units, as Java's term length does;
-        // `term_len` counts the `char`s written into the term buffer.
-        let mut length: i32 = 0;
-        let mut term_len: usize = 0;
-        let mut start: i32 = -1; // this variable is always initialized
-        let mut end: i32 = -1;
-        {
-            let mut term_att = source
-                .get_attribute_interface_mut::<dyn CharTermAttribute>()
-                .expect("INVARIANT: the constructor added the CharTermAttribute");
-            let mut buffer_len = term_att.buffer().len();
-            loop {
-                if self.buffer_index >= self.data_len {
-                    self.offset += self.data_len as i32;
-                    // read supplementary char aware with CharacterUtils
-                    fill_buffer(&mut self.io_buffer, input)?;
-                    if self.io_buffer.length() == 0 {
-                        self.data_len = 0; // so next offset += dataLen won't decrement offset
-                        if length > 0 {
-                            break;
-                        } else {
-                            drop(term_att);
-                            self.final_offset =
-                                Tokenizer::<Self>::correct_offset_of(Some(&*input), self.offset);
-                            return Ok(false);
-                        }
-                    }
-                    self.data_len = self.io_buffer.length();
-                    self.buffer_index = 0;
-                }
-                // use CharacterUtils here to support < 3.1 UTF-16 code unit
-                // behavior if the char based methods are gone
-                let c = code_point_at(
-                    self.io_buffer.buffer(),
-                    self.buffer_index,
-                    self.io_buffer.length(),
-                );
-                let char_count = char_count(c);
-                self.buffer_index += char_count;
-
-                if self.logic.is_token_char(c) {
-                    // if it's a token char
-                    if length == 0 {
-                        // start of token
-                        debug_assert!(start == -1);
-                        start = self.offset + self.buffer_index as i32 - char_count as i32;
-                        end = start;
-                    } else if term_len >= buffer_len - 1 {
-                        // supplementary could run out of bounds?
-                        // make sure a supplementary fits in the buffer
-                        buffer_len = term_att.resize_buffer(2 + term_len).len();
-                    }
-                    end += char_count as i32;
-                    // buffer it, normalized
-                    term_att.buffer_mut()[term_len] = to_term_char(c);
-                    term_len += 1;
-                    length += char_count as i32;
-                    // buffer overflow! make sure to check for >= surrogate
-                    // pair could break == test
-                    if length >= self.max_token_len {
-                        break;
-                    }
-                } else if length > 0 {
-                    // at non-Letter w/ chars
-                    break; // return 'em
-                }
-            }
-
-            term_att.set_length(term_len);
-        }
-        debug_assert!(start != -1);
-        let corrected_start = Tokenizer::<Self>::correct_offset_of(Some(&*input), start);
-        self.final_offset = Tokenizer::<Self>::correct_offset_of(Some(&*input), end);
-        source
-            .get_attribute_interface_mut::<dyn OffsetAttribute>()
-            .expect("INVARIANT: the constructor added the OffsetAttribute")
-            .set_offset(corrected_start, self.final_offset);
-        Ok(true)
+        let attributes = match self.attributes.take() {
+            Some(attributes) => attributes,
+            None => CharTokenizerAttributes::get(source),
+        };
+        let result = self.next_token(&attributes, input);
+        self.attributes = Some(attributes);
+        result
     }
 
     /// Equivalent to the final `CharTokenizer.end()`; `Tokenizer::end` has
     /// run `super.end()`. It sets the final offset.
     fn end(&mut self, source: &mut AttributeSource, _input: Option<&dyn CharReader>) -> Result<()> {
-        source
-            .get_attribute_interface_mut::<dyn OffsetAttribute>()
-            .expect("INVARIANT: the constructor added the OffsetAttribute")
-            .set_offset(self.final_offset, self.final_offset);
+        match &self.attributes {
+            Some(attributes) => attributes
+                .offset_att
+                .borrow_mut()
+                .set_offset(self.final_offset, self.final_offset),
+            None => source
+                .get_attribute_interface_mut::<dyn OffsetAttribute>()
+                .expect("INVARIANT: the constructor added the OffsetAttribute")
+                .set_offset(self.final_offset, self.final_offset),
+        }
         Ok(())
     }
 
@@ -217,6 +300,100 @@ impl<T: CharTokenizerLogic> TokenizerLogic for CharTokenizerAdapter<T> {
         self.final_offset = 0;
         self.io_buffer.reset(); // make sure to reset the IO buffer!!
         Ok(())
+    }
+}
+
+/// `CharTokenizer` as an owned stage (see [`rucene::analysis::owned`]):
+/// the same scan and attribute writes as [`CharTokenizerAdapter`], over its
+/// own `ReusableStringReader`.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct OwnedCharTokenizer<T: CharTokenizerLogic> {
+    adapter: CharTokenizerAdapter<T>,
+    reader: rucene::analysis::reusable_string_reader::ReusableStringReader,
+    /// Whether `reader` is the tokenizer's `input` (between `reset()` and
+    /// `close()`); Java's `input` is `ILLEGAL_STATE_READER` otherwise.
+    input_open: bool,
+    /// Java's `inputPending` holds the reader.
+    input_pending: bool,
+}
+
+impl<T: CharTokenizerLogic> OwnedCharTokenizer<T> {
+    /// The stage of the tokenizer `adapter` describes (its logic and
+    /// maximum token length).
+    pub fn new(adapter: CharTokenizerAdapter<T>) -> Self {
+        Self {
+            adapter,
+            reader: rucene::analysis::reusable_string_reader::ReusableStringReader::new(),
+            input_open: false,
+            input_pending: false,
+        }
+    }
+}
+
+impl<T: CharTokenizerLogic> rucene::analysis::owned::OwnedTokenizer for OwnedCharTokenizer<T> {
+    fn set_text(&mut self, text: &str) -> Result<()> {
+        // Tokenizer.setReader: `if (input != ILLEGAL_STATE_READER) throw`.
+        if self.input_open {
+            return Err(LuceneError::illegal_state(
+                "TokenStream contract violation: close() call missing".to_string(),
+            ));
+        }
+        self.reader.set_value(text);
+        self.input_pending = true;
+        Ok(())
+    }
+
+    fn reset(&mut self) -> Result<()> {
+        // Tokenizer.reset(): input = inputPending; then CharTokenizer.reset()
+        self.input_open = std::mem::take(&mut self.input_pending);
+        let adapter = &mut self.adapter;
+        adapter.buffer_index = 0;
+        adapter.offset = 0;
+        adapter.data_len = 0;
+        adapter.final_offset = 0;
+        adapter.io_buffer.reset(); // make sure to reset the IO buffer!!
+        Ok(())
+    }
+
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+    ) -> Result<bool> {
+        attrs.clear();
+        let span = if self.input_open {
+            self.adapter.scan_token(attrs.term, &mut self.reader)?
+        } else {
+            let mut illegal = rucene::analysis::IllegalStateReader;
+            self.adapter.scan_token(attrs.term, &mut illegal)?
+        };
+        Ok(match span {
+            Some((start_offset, end_offset)) => {
+                attrs.term.set_offset(start_offset, end_offset);
+                true
+            }
+            None => false,
+        })
+    }
+
+    fn end(&mut self, attrs: &mut rucene::analysis::owned::TokenAttrs<'_>) -> Result<()> {
+        // super.end(), then offsetAtt.setOffset(finalOffset, finalOffset)
+        attrs.end();
+        let final_offset = self.adapter.final_offset;
+        attrs.term.set_offset(final_offset, final_offset);
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        let closed = if self.input_open {
+            rucene::analysis::CharReader::close(&mut self.reader)
+        } else {
+            Ok(())
+        };
+        self.input_open = false;
+        self.input_pending = false;
+        closed
     }
 }
 

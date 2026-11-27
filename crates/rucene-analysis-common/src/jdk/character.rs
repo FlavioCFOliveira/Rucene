@@ -71,6 +71,14 @@ pub fn is_digit(code_point: i32) -> bool {
 /// property), which includes the no-break spaces and U+0085 and excludes
 /// U+001C-U+001F.
 pub fn is_whitespace(code_point: i32) -> bool {
+    // PERF: below U+1680, the first whitespace past Latin-1, the table holds
+    // only U+0009-U+000D and U+001C-U+0020; those code points are answered
+    // without the binary search, as Java answers Latin-1 from
+    // `CharacterDataLatin1`'s table (same answer: see the test
+    // `is_whitespace_fast_path_matches_the_table`).
+    if (0..0x1680).contains(&code_point) {
+        return matches!(code_point, 0x09..=0x0D | 0x1C..=0x20);
+    }
     in_ranges(WHITESPACE, code_point)
 }
 
@@ -307,6 +315,42 @@ pub const FORMAT: u8 = 16;
 /// `Character.SURROGATE`, general category `Cs`.
 pub const SURROGATE: u8 = 19;
 
+/// `Character.CONNECTOR_PUNCTUATION`, general category `Pc`.
+pub const CONNECTOR_PUNCTUATION: u8 = 23;
+/// `Character.CURRENCY_SYMBOL`, general category `Sc`.
+pub const CURRENCY_SYMBOL: u8 = 26;
+
+/// `Character.isIdentifierIgnorable(int)`: the ISO control characters that
+/// are not whitespace (`U+0000`-`U+0008`, `U+000E`-`U+001B`,
+/// `U+007F`-`U+009F`) and every `FORMAT` (`Cf`) code point.
+pub fn is_identifier_ignorable(code_point: i32) -> bool {
+    (0x0000..=0x0008).contains(&code_point)
+        || (0x000E..=0x001B).contains(&code_point)
+        || (0x007F..=0x009F).contains(&code_point)
+        || get_type(code_point) == FORMAT
+}
+
+/// `Character.isJavaIdentifierPart(int)`, as JDK 25 answers: a letter
+/// (`Lu`, `Ll`, `Lt`, `Lm`, `Lo`), a currency symbol (`Sc`), a connecting
+/// punctuation character (`Pc`), a digit (`Nd`), a numeric letter (`Nl`), a
+/// combining mark (`Mc`), a non-spacing mark (`Mn`), or an identifier-ignorable
+/// code point ([`is_identifier_ignorable`]).
+///
+/// This is the rule of the method's specification over [`get_type`]; checked
+/// against JDK 25.0.5 `Character.isJavaIdentifierPart` for every code point
+/// `0..=0x10FFFF` (0 mismatches).
+pub fn is_java_identifier_part(code_point: i32) -> bool {
+    let t = get_type(code_point);
+    (UPPERCASE_LETTER..=OTHER_LETTER).contains(&t)
+        || t == CURRENCY_SYMBOL
+        || t == CONNECTOR_PUNCTUATION
+        || t == DECIMAL_DIGIT_NUMBER
+        || t == LETTER_NUMBER
+        || t == COMBINING_SPACING_MARK
+        || t == NON_SPACING_MARK
+        || is_identifier_ignorable(code_point)
+}
+
 /// `Character.getType(int)`: the general category of `code_point`, as the
 /// value of Java's `Character` category constant, as JDK 25 answers (a
 /// surrogate code unit is [`SURROGATE`]; a value outside the code space is
@@ -367,6 +411,24 @@ pub fn chars_to_utf16(chars: &[char]) -> Vec<u16> {
         units.extend_from_slice(c.encode_utf16(&mut buf));
     }
     units
+}
+
+/// [`chars_to_utf16`] written into `units`, whose buffer is reused.
+pub(crate) fn chars_to_utf16_into(chars: &[char], units: &mut Vec<u16>) {
+    units.clear();
+    units.reserve(chars.len());
+    let mut buf = [0u16; 2];
+    for c in chars {
+        units.extend_from_slice(c.encode_utf16(&mut buf));
+    }
+}
+
+/// [`utf16_to_term_chars`] written into `chars`, whose buffer is reused.
+pub(crate) fn utf16_to_term_chars_into(units: &[u16], chars: &mut Vec<char>) {
+    chars.clear();
+    chars.extend(
+        char::decode_utf16(units.iter().copied()).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)),
+    );
 }
 
 /// The number of UTF-16 units of `chars`: Java's `CharTermAttribute.length()`
@@ -478,5 +540,27 @@ impl std::fmt::Display for UnicodeBlock {
     /// `UnicodeBlock.toString()`: the block's canonical name.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name)
+    }
+}
+
+#[cfg(test)]
+mod whitespace_fast_path_tests {
+    use super::*;
+
+    /// The Latin-1/BMP-prefix fast path of `is_whitespace` gives the table's
+    /// answer for every code point it covers, and the table still answers
+    /// past it.
+    #[test]
+    fn is_whitespace_fast_path_matches_the_table() {
+        for code_point in -1..0x1700 {
+            assert_eq!(
+                is_whitespace(code_point),
+                in_ranges(WHITESPACE, code_point),
+                "code point {code_point:#x}"
+            );
+        }
+        assert!(is_whitespace(0x1680));
+        assert!(is_whitespace(0x3000));
+        assert!(!is_whitespace(0x00A0));
     }
 }

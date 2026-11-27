@@ -69,11 +69,12 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 
+use crate::analysis::owned::{analyzed_text, OwnedTokenChain};
 use crate::analysis::tokenattributes::{
-    OffsetAttribute, PayloadAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
-    TermToBytesRefAttribute,
+    OffsetAttribute, PackedTokenAttributeImpl, PayloadAttribute, PositionIncrementAttribute,
+    TermFrequencyAttribute, TermToBytesRefAttribute,
 };
-use crate::analysis::{Analyzer, AttributeHandle, TokenStream};
+use crate::analysis::{Analyzer, AttributeHandle, SharedTokenStream, TokenStream};
 use crate::codecs::doc_values::DocValuesConsumer;
 use crate::codecs::knn_vectors::FieldVectorWriter;
 use crate::codecs::points::PointsWriter;
@@ -98,14 +99,15 @@ use crate::index::sorting_consumers::{SortingStoredFieldsConsumer, SortingTermVe
 use crate::index::stored_fields_consumer::StoredFieldsConsumer;
 use crate::index::term_vectors_consumer::TermVectorsConsumer;
 use crate::index::vector_values_consumer::VectorValuesConsumer;
+use crate::index::NumericValue;
 use crate::index::{
-    DocValuesType, FieldInfo, IndexOptions, IndexableField, IndexableFieldIterable,
-    IndexableFieldType, SegmentInfo,
+    DocValuesType, FieldInfo, FieldsIter, IndexOptions, IndexableField, IndexableFieldIterable,
+    IndexableFieldType, SegmentInfo, StoredValueRef,
 };
-use crate::index::{NumericValue, StoredValue};
 use crate::search::Similarity;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
 use crate::store::TrackingDirectoryWrapper;
+use crate::util::attribute::{AttributeImpl, AttributeInterface};
 use crate::util::byte_block_pool::MAX_TERM_LENGTH;
 use crate::util::java_collections::JavaStringMap;
 use crate::util::NumericUtils;
@@ -287,6 +289,13 @@ struct InvertAttributes {
     /// `payloadAttribute = attributeSource.getAttribute(PayloadAttribute.class)`,
     /// `None` where Java's is `null`.
     payload: Option<AttributeHandle<dyn PayloadAttribute>>,
+    /// Whether one implementation instance provides the term, term-frequency,
+    /// position-increment and offset attributes and the payload attribute when
+    /// present (the default factory's `PackedTokenAttributeImpl`).
+    ///
+    /// PERF: [`read_token`] then reads the token under one borrow of that
+    /// instance instead of one borrow per attribute (rmp #679).
+    packed: bool,
 }
 
 impl FieldInvertState {
@@ -402,12 +411,21 @@ impl FieldInvertState {
                 let pos_incr = AttributeHandle::add(&mut source)?;
                 let offset = AttributeHandle::add(&mut source)?;
                 let payload = AttributeHandle::get(&source);
+                let packed = term.as_ref().is_some_and(|term| {
+                    term.same_impl_as(&term_freq)
+                        && term.same_impl_as(&pos_incr)
+                        && term.same_impl_as(&offset)
+                        && payload
+                            .as_ref()
+                            .is_none_or(|payload| term.same_impl_as(payload))
+                });
                 self.attributes = Some(InvertAttributes {
                     term,
                     term_freq,
                     pos_incr,
                     offset,
                     payload,
+                    packed,
                 });
                 self.attribute_source = Some(source);
             }
@@ -1132,6 +1150,58 @@ struct RawToken {
     has_term_freq_attribute: bool,
 }
 
+/// The indexing chain's owned token chains (rmp #679 owned chain; see
+/// [`DefaultIndexingChain::invert_owned`]), built on first use for the
+/// analyzer of that use and shared by the fields that share the analyzer's
+/// components: every field under the global reuse strategy, one field under
+/// the per-field strategy. A consumer reading the attribute source (a
+/// similarity's `computeNorm`, after every field of the document) then sees
+/// the state the shared components hold.
+#[derive(Debug, Default)]
+struct OwnedChainSlot {
+    /// The chain of an analyzer whose components serve every field: the
+    /// analyzer (its address) and its chain, `None` when it has none.
+    global: Option<(usize, Option<OwnedTokenChain>)>,
+    /// Per field (the index of its [`PerField`]), under the per-field
+    /// strategy.
+    per_field: Vec<Option<(usize, Option<OwnedTokenChain>)>>,
+}
+
+impl OwnedChainSlot {
+    /// The owned chain field `index` uses with `analyzer`, built (or found
+    /// missing) once per analyzer.
+    fn chain(
+        &mut self,
+        index: usize,
+        analyzer: &dyn Analyzer,
+        field_name: &str,
+    ) -> Option<&mut OwnedTokenChain> {
+        let key = analyzer as *const dyn Analyzer as *const () as usize;
+        // PERF: the global chain of this analyzer, found without asking the
+        // reuse strategy again (one `dyn` call per value saved).
+        if matches!(&self.global, Some((built_for, _)) if *built_for == key) {
+            return self.global.as_mut().and_then(|(_, chain)| chain.as_mut());
+        }
+        let entry = match analyzer
+            .analyzer_state()
+            .reuse_strategy()
+            .shares_components_across_fields()?
+        {
+            true => &mut self.global,
+            false => {
+                if self.per_field.len() <= index {
+                    self.per_field.resize_with(index + 1, || None);
+                }
+                &mut self.per_field[index]
+            }
+        };
+        if !matches!(entry, Some((built_for, _)) if *built_for == key) {
+            *entry = Some((key, OwnedTokenChain::build(analyzer, Some(field_name))));
+        }
+        entry.as_mut().and_then(|(_, chain)| chain.as_mut())
+    }
+}
+
 /// Reads the current token off the attributes `FieldInvertState` cached.
 ///
 /// Lucene reaches for `TermToBytesRefAttribute`, `PositionIncrementAttribute`,
@@ -1140,6 +1210,9 @@ struct RawToken {
 /// position-increment, offset and term-frequency attributes were added to
 /// the stream there, so only the term and the payload may be absent.
 fn read_token(attributes: &InvertAttributes, term: &mut BytesRef) -> Result<RawToken> {
+    if attributes.packed {
+        return Ok(read_packed_token(attributes, term));
+    }
     // `termAttribute = attributeSource.getAttribute(...)` is `null` without
     // the attribute (`FieldInvertState.java:106`); the dereference happens in
     // `termsHashPerField.add(invertState.termAttribute.getBytesRef(), docID)`
@@ -1176,6 +1249,61 @@ fn read_token(attributes: &InvertAttributes, term: &mut BytesRef) -> Result<RawT
         // `invertTerm`, which passes no attribute source, leaves it `null`.
         has_term_freq_attribute: true,
     })
+}
+
+/// [`read_token`] for attributes one implementation provides: the same reads,
+/// in the same order, under one borrow of that implementation.
+fn read_packed_token(attributes: &InvertAttributes, term: &mut BytesRef) -> RawToken {
+    fn cast<I: AttributeInterface + ?Sized>(att: &dyn AttributeImpl) -> &I {
+        I::cast(att).expect("INVARIANT: an implementation answers the casts it is keyed by")
+    }
+    let term_attribute = attributes
+        .term
+        .as_ref()
+        .expect("INVARIANT: packed attributes have a term attribute");
+    let att = term_attribute.borrow_impl();
+    let att: &dyn AttributeImpl = &**att;
+    // PERF: the default factory's `PackedTokenAttributeImpl` is read through
+    // its concrete type, statically and inlined, as the JIT inlines Java's
+    // monomorphic attribute reads (rmp #679 devirtualisation; same reads,
+    // same order). Any other implementation takes the `dyn` path below.
+    if let Some(packed) = att.as_any().downcast_ref::<PackedTokenAttributeImpl>() {
+        packed.copy_bytes_ref_to(term);
+        let position_increment = packed.get_position_increment();
+        let (start_offset, end_offset) = (packed.start_offset(), packed.end_offset());
+        let payload = attributes
+            .payload
+            .as_ref()
+            .and_then(|_| cast::<dyn PayloadAttribute>(att).get_payload().cloned());
+        let term_freq = packed.get_term_frequency();
+        return RawToken {
+            has_term: true,
+            position_increment,
+            start_offset,
+            end_offset,
+            payload,
+            term_freq,
+            has_term_freq_attribute: true,
+        };
+    }
+    cast::<dyn TermToBytesRefAttribute>(att).copy_bytes_ref_to(term);
+    let position_increment = cast::<dyn PositionIncrementAttribute>(att).get_position_increment();
+    let offset = cast::<dyn OffsetAttribute>(att);
+    let (start_offset, end_offset) = (offset.start_offset(), offset.end_offset());
+    let payload = attributes
+        .payload
+        .as_ref()
+        .and_then(|_| cast::<dyn PayloadAttribute>(att).get_payload().cloned());
+    let term_freq = cast::<dyn TermFrequencyAttribute>(att).get_term_frequency();
+    RawToken {
+        has_term: true,
+        position_increment,
+        start_offset,
+        end_offset,
+        payload,
+        term_freq,
+        has_term_freq_attribute: true,
+    }
 }
 
 /// Reads the end-of-stream position increment and end offset.
@@ -1246,6 +1374,9 @@ pub struct DefaultIndexingChain {
     /// array.
     doc_fields: Vec<usize>,
     aborting_error: Option<LuceneError>,
+    /// The chain's own `StandardAnalyzer` token stream (rmp #679 ownership
+    /// prototype), built on first use.
+    owned_standard: OwnedChainSlot,
     /// The stored-fields half of the chain, present once the chain knows which
     /// segment it writes. Equivalent to `IndexingChain.storedFieldsConsumer`,
     /// which Lucene builds in the constructor because it already has the
@@ -1284,7 +1415,9 @@ impl DefaultIndexingChain {
         let parent_field = config
             .parent_field()
             .map(|name| NumericDocValuesField::new(&name, -1));
+        let owned_standard = OwnedChainSlot::default();
         Self {
+            owned_standard,
             scratch: SharedIndexingScratch::new(Arc::clone(&bytes_used)),
             terms_writer: FreqProxTermsWriter::new(Arc::clone(&bytes_used)),
             doc_values_byte_pool: Arc::new(ByteBlockPool::new(Arc::clone(&bytes_used))),
@@ -1378,7 +1511,9 @@ impl DefaultIndexingChain {
         // This port drains the cursor eagerly in `stored_value()`, so the same
         // read failure surfaces one call earlier and must be routed to the same
         // place: a half-read stored value leaves the segment untrustworthy.
-        let value = field.stored_value().inspect_err(|error| {
+        // PERF: the value is read through `stored_value_ref`, so a string or
+        // binary value is written from the field without a copy.
+        let value = field.stored_value_ref().inspect_err(|error| {
             // Java hands the throwable itself to `onAbortingException`.
             self.on_aborting_exception(error.duplicate());
         })?;
@@ -1419,7 +1554,7 @@ impl DefaultIndexingChain {
                 field.name()
             )));
         };
-        let written = consumer.write_field(info, value);
+        let written = consumer.write_field(info, &value);
         if let Err(error) = &written {
             // Java hands the throwable itself to `onAbortingException`.
             self.on_aborting_exception(error.duplicate());
@@ -2209,7 +2344,7 @@ impl DefaultIndexingChain {
                 .add_value(doc_id, field, &mut self.doc_values_byte_pool)?;
         }
         if field.field_type().point_dimension_count() != 0 {
-            match field.binary_value() {
+            match field.binary_value_ref() {
                 Some(value) => self.per_fields[pf]
                     .point_values
                     .as_mut()
@@ -2345,6 +2480,7 @@ impl DefaultIndexingChain {
         field: &dyn IndexableField,
         first: bool,
         aborting_error: &mut Option<LuceneError>,
+        (owned, field_index): (&mut OwnedChainSlot, usize),
     ) -> Result<()> {
         debug_assert!(field
             .field_type()
@@ -2363,17 +2499,64 @@ impl DefaultIndexingChain {
                 field,
                 first,
             ),
-            Some(InvertableType::TOKEN_STREAM) => Self::invert_token_stream(
-                analyzer,
-                info_stream,
-                terms_writer,
-                term_vectors,
-                per_field,
-                doc_id,
-                field,
-                first,
-                aborting_error,
-            ),
+            Some(InvertableType::TOKEN_STREAM) => {
+                // rmp #679 owned chain: the analyzer's stages, owned by this
+                // indexing chain, for a field whose `tokenStream` would be
+                // `analyzer.tokenStream(name, value)` (`Field.java:465-498`).
+                if let Some(analyzer) =
+                    analyzer.filter(|analyzer| !analyzer.analyzer_state().is_closed())
+                {
+                    if let Some(text) = analyzed_text(field) {
+                        if let Some(chain) =
+                            owned.chain(field_index, analyzer, &per_field.field_name)
+                        {
+                            // The analyzer's reusable components, created as
+                            // `tokenStream` creates them; a failure is
+                            // `field.tokenStream`'s, logged as the shared
+                            // path logs it.
+                            let bound = chain
+                                .bind(analyzer, Some(&per_field.field_name))
+                                .inspect_err(|_| {
+                                    if info_stream.is_enabled("DW") {
+                                        info_stream.message(
+                                            "DW",
+                                            &format!(
+                                                "An exception was thrown while processing field {}",
+                                                per_field.field_name
+                                            ),
+                                        );
+                                    }
+                                })?;
+                            if bound {
+                                return Self::invert_owned(
+                                    analyzer,
+                                    &text,
+                                    chain,
+                                    info_stream,
+                                    terms_writer,
+                                    term_vectors,
+                                    per_field,
+                                    doc_id,
+                                    field,
+                                    first,
+                                    aborting_error,
+                                );
+                            }
+                        }
+                    }
+                }
+                Self::invert_token_stream(
+                    analyzer,
+                    info_stream,
+                    terms_writer,
+                    term_vectors,
+                    per_field,
+                    doc_id,
+                    field,
+                    first,
+                    aborting_error,
+                )
+            }
             None => Err(LuceneError::illegal_argument(format!(
                 "field \"{}\" is not indexed but reached the inverter",
                 field.name()
@@ -2492,10 +2675,9 @@ impl DefaultIndexingChain {
         // so the carried string is used directly to keep the two messages
         // identical.
         let original_message = match &original {
-            LuceneError {
-                kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
-                ..
-            } => message.clone(),
+            __lerr if let LuceneErrorKind::MaxBytesLengthExceeded(message) = &__lerr.kind => {
+                message.clone()
+            }
             other => other.to_string(),
         };
         let prefix: Vec<String> = term
@@ -2644,6 +2826,231 @@ impl DefaultIndexingChain {
         consumer.add(index, &per_field.invert_state, text_start, token)
     }
 
+    /// `invertTokenStream` over an [`OwnedTokenChain`] (rmp #679 owned
+    /// chain): the same steps as [`invert_token_stream`](Self::invert_token_stream)
+    /// — `field.tokenStream` (the chain takes the text), `stream.reset()`,
+    /// `invertState.setAttributeSource(stream)` (the chain's attribute
+    /// source, the shared stream's own), `termsHashPerField.start`, the token
+    /// loop, `end` and the end position and offset, `close`, then the
+    /// analyzer's gaps — with the attributes read in place.
+    #[allow(clippy::too_many_arguments)]
+    fn invert_owned(
+        analyzer: &dyn Analyzer,
+        text: &str,
+        chain: &mut OwnedTokenChain,
+        info_stream: &dyn InfoStream,
+        terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &mut PerField,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        first: bool,
+        aborting_error: &mut Option<LuceneError>,
+    ) -> Result<()> {
+        let is_term_doc = per_field.field_info().is_term_doc_field();
+        // `field.tokenStream(analyzer, tokenStream)`, logged on failure as the
+        // shared path logs it.
+        if let Err(error) = chain.set_text(text) {
+            if info_stream.is_enabled("DW") {
+                info_stream.message(
+                    "DW",
+                    &format!(
+                        "An exception was thrown while processing field {}",
+                        per_field.field_name
+                    ),
+                );
+            }
+            return Err(error);
+        }
+        let mut term_vectors = term_vectors;
+        let mut term_bytes = std::mem::take(&mut per_field.term_bytes);
+        let outcome = (|| -> Result<()> {
+            chain.reset()?;
+            per_field
+                .invert_state
+                .set_stream_attribute_source(chain.attribute_source())?;
+            Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
+            let (end_position_increment, end_offset) = chain.for_each_token(|att| {
+                att.copy_bytes_ref_to(&mut term_bytes);
+                // The chain's source holds no `PayloadAttribute`
+                // (`OwnedTokenChain::build`): Java's `getAttribute` is `null`.
+                let token = RawToken {
+                    has_term: true,
+                    position_increment: att.get_position_increment(),
+                    start_offset: att.start_offset(),
+                    end_offset: att.end_offset(),
+                    payload: None,
+                    term_freq: att.get_term_frequency(),
+                    has_term_freq_attribute: true,
+                };
+                Self::invert_one_token(
+                    info_stream,
+                    terms_writer,
+                    term_vectors.as_deref_mut(),
+                    per_field,
+                    doc_id,
+                    field,
+                    is_term_doc,
+                    &token,
+                    &term_bytes,
+                    aborting_error,
+                )
+            })?;
+            per_field.invert_state.position += end_position_increment;
+            per_field.invert_state.offset += end_offset;
+            Ok(())
+        })();
+        per_field.term_bytes = term_bytes;
+        let close_outcome = chain.close();
+        if outcome.is_err() && info_stream.is_enabled("DW") {
+            info_stream.message(
+                "DW",
+                &format!(
+                    "An exception was thrown while processing field {}",
+                    per_field.field_name
+                ),
+            );
+        }
+        outcome?;
+        close_outcome?;
+        per_field.invert_state.position +=
+            analyzer.get_position_increment_gap(Some(&per_field.field_name));
+        per_field.invert_state.offset += analyzer.get_offset_gap(Some(&per_field.field_name));
+        Ok(())
+    }
+
+    /// One token of `invertTokenStream`'s loop (`IndexingChain.java:1913-2032`),
+    /// after the token was read: position, offset and length accounting, then
+    /// the postings and term vectors. Shared by the shared-chain loop and the
+    /// owned chain ([`OwnedTokenChain`]).
+    #[allow(clippy::too_many_arguments)]
+    #[inline]
+    fn invert_one_token(
+        info_stream: &dyn InfoStream,
+        terms_writer: &mut FreqProxTermsWriter,
+        term_vectors: Option<&mut TermVectorsConsumer>,
+        per_field: &mut PerField,
+        doc_id: i32,
+        field: &dyn IndexableField,
+        is_term_doc: bool,
+        token: &RawToken,
+        term_bytes: &BytesRef,
+        aborting_error: &mut Option<LuceneError>,
+    ) -> Result<()> {
+        let state = &mut per_field.invert_state;
+
+        let position_increment = token.position_increment;
+        // Java `int` arithmetic wraps; the overflow is what the
+        // "position overflowed" branch reports (`IndexingChain.java:1924-1946`).
+        state.position = state.position.wrapping_add(position_increment);
+        if state.position < state.last_position {
+            return Err(LuceneError::illegal_argument(if position_increment == 0 {
+                format!(
+                    "first position increment must be > 0 (got 0) for field '{}'",
+                    field.name()
+                )
+            } else if position_increment < 0 {
+                format!(
+                    "position increment must be >= 0 (got {position_increment}) for field '{}'",
+                    field.name()
+                )
+            } else {
+                format!(
+                    "position overflowed Integer.MAX_VALUE (got posIncr={position_increment} lastPosition={} position={}) for field '{}'",
+                    state.last_position,
+                    state.position,
+                    field.name()
+                )
+            }));
+        }
+        if state.position > MAX_POSITION {
+            return Err(LuceneError::illegal_argument(format!(
+                "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
+                state.position,
+                field.name()
+            )));
+        }
+        state.last_position = state.position;
+        if position_increment == 0 {
+            state.num_overlap += 1;
+        }
+
+        let start_offset = state.offset.wrapping_add(token.start_offset);
+        let end_offset = state.offset.wrapping_add(token.end_offset);
+        if start_offset < state.last_start_offset || end_offset < start_offset {
+            return Err(LuceneError::illegal_argument(format!(
+                "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
+                state.last_start_offset,
+                field.name()
+            )));
+        }
+        state.last_start_offset = start_offset;
+
+        let counted = if is_term_doc { 1 } else { token.term_freq };
+        // `Math.addExact` throws `ArithmeticException("integer
+        // overflow")`, rethrown with that cause
+        // (`IndexingChain.java:1980-1991`).
+        state.length = state.length.checked_add(counted).ok_or_else(|| {
+            LuceneError::illegal_argument_with_cause(
+                format!("too many tokens for field \"{}\"", field.name()),
+                Arc::new(LuceneError::integer_overflow()),
+            )
+        })?;
+
+        let inverted = InvertedToken {
+            start_offset: token.start_offset,
+            end_offset: token.end_offset,
+            payload: token.payload.as_ref().map(BytesRef::slice),
+            term_freq: token.term_freq,
+            has_term_freq_attribute: token.has_term_freq_attribute,
+        };
+        // `pf.termsHashPerField` is set for every field that inverts
+        // (`IndexingChain.java:1155-1168`).
+        let writer_index = per_field
+            .writer_index
+            .expect("INVARIANT: an inverted field has a postings writer");
+        let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
+        // `termsHashPerField.add(...)` — the postings and, through
+        // `nextPerField.add`, the term vectors — inside one `try`
+        // (`IndexingChain.java:2001-2027`).
+        // `invertState.termAttribute.getBytesRef()` on a `null`
+        // attribute throws `NullPointerException` inside the `try`,
+        // whose `catch (Throwable th)` aborts.
+        let term: &[u8] = if token.has_term {
+            term_bytes.slice()
+        } else {
+            &[]
+        };
+        let added = token
+            .has_term
+            .then_some(())
+            .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
+            .and_then(|_| {
+                writer.add_classified(
+                    pool,
+                    int_pool,
+                    &mut per_field.invert_state,
+                    term,
+                    doc_id,
+                    &inverted,
+                )
+            })
+            .and_then(|text_start| {
+                Self::add_to_vectors(term_vectors, per_field, text_start, &inverted)
+                    .map_err(TermsHashAddError::Other)
+            });
+        if let Err(error) = added {
+            return Err(Self::catch_terms_hash_add_error(
+                info_stream,
+                aborting_error,
+                field.name(),
+                term,
+                error,
+            ));
+        }
+        Ok(())
+    }
+
     /// Inverts a field through its token stream.
     ///
     /// Equivalent to `IndexingChain.PerField.invertTokenStream`.
@@ -2702,125 +3109,38 @@ impl DefaultIndexingChain {
             // (`IndexingChain.java:1908-1912`).
             Self::start_vectors(term_vectors.as_deref_mut(), per_field, field, first)?;
 
-            while stream.increment_token()? {
+            // PERF: the stream of the reused components is borrowed once for
+            // the token loop instead of once per `increment_token` (rmp #679);
+            // the attributes are separate cells, read between calls.
+            let mut hoisted = None;
+            let tokens: &mut dyn TokenStream = if stream
+                .as_any()
+                .is_some_and(|stream| stream.is::<SharedTokenStream>())
+            {
+                let shared = stream
+                    .as_any_mut()
+                    .and_then(|stream| stream.downcast_mut::<SharedTokenStream>())
+                    .expect("INVARIANT: the stream was checked to be a SharedTokenStream");
+                &mut **hoisted.insert(shared.borrow_inner_mut())
+            } else {
+                &mut *stream
+            };
+            while tokens.increment_token()? {
                 let token = read_token(per_field.invert_state.attributes()?, &mut term_bytes)?;
-                let state = &mut per_field.invert_state;
-
-                let position_increment = token.position_increment;
-                // Java `int` arithmetic wraps; the overflow is what the
-                // "position overflowed" branch reports (`IndexingChain.java:1924-1946`).
-                state.position = state.position.wrapping_add(position_increment);
-                if state.position < state.last_position {
-                    return Err(LuceneError::illegal_argument(if position_increment == 0 {
-                        format!(
-                            "first position increment must be > 0 (got 0) for field '{}'",
-                            field.name()
-                        )
-                    } else if position_increment < 0 {
-                        format!(
-                            "position increment must be >= 0 (got {position_increment}) for field '{}'",
-                            field.name()
-                        )
-                    } else {
-                        format!(
-                            "position overflowed Integer.MAX_VALUE (got posIncr={position_increment} lastPosition={} position={}) for field '{}'",
-                            state.last_position,
-                            state.position,
-                            field.name()
-                        )
-                    }));
-                }
-                if state.position > MAX_POSITION {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "position {} is too large for field '{}': max allowed position is {MAX_POSITION}",
-                        state.position,
-                        field.name()
-                    )));
-                }
-                state.last_position = state.position;
-                if position_increment == 0 {
-                    state.num_overlap += 1;
-                }
-
-                let start_offset = state.offset.wrapping_add(token.start_offset);
-                let end_offset = state.offset.wrapping_add(token.end_offset);
-                if start_offset < state.last_start_offset || end_offset < start_offset {
-                    return Err(LuceneError::illegal_argument(format!(
-                        "startOffset must be non-negative, and endOffset must be >= startOffset, and offsets must not go backwards startOffset={start_offset},endOffset={end_offset},lastStartOffset={} for field '{}'",
-                        state.last_start_offset,
-                        field.name()
-                    )));
-                }
-                state.last_start_offset = start_offset;
-
-                let counted = if is_term_doc { 1 } else { token.term_freq };
-                // `Math.addExact` throws `ArithmeticException("integer
-                // overflow")`, rethrown with that cause
-                // (`IndexingChain.java:1980-1991`).
-                state.length = state.length.checked_add(counted).ok_or_else(|| {
-                    LuceneError::illegal_argument_with_cause(
-                        format!("too many tokens for field \"{}\"", field.name()),
-                        Arc::new(LuceneError::integer_overflow()),
-                    )
-                })?;
-
-                let inverted = InvertedToken {
-                    start_offset: token.start_offset,
-                    end_offset: token.end_offset,
-                    payload: token.payload.as_ref().map(BytesRef::slice),
-                    term_freq: token.term_freq,
-                    has_term_freq_attribute: token.has_term_freq_attribute,
-                };
-                // `pf.termsHashPerField` is set for every field that inverts
-                // (`IndexingChain.java:1155-1168`).
-                let writer_index = per_field
-                    .writer_index
-                    .expect("INVARIANT: an inverted field has a postings writer");
-                let (pool, int_pool, writer) = terms_writer.pool_and_field(writer_index);
-                // `termsHashPerField.add(...)` — the postings and, through
-                // `nextPerField.add`, the term vectors — inside one `try`
-                // (`IndexingChain.java:2001-2027`).
-                // `invertState.termAttribute.getBytesRef()` on a `null`
-                // attribute throws `NullPointerException` inside the `try`,
-                // whose `catch (Throwable th)` aborts.
-                let term: &[u8] = if token.has_term {
-                    term_bytes.slice()
-                } else {
-                    &[]
-                };
-                let added = token
-                    .has_term
-                    .then_some(())
-                    .ok_or_else(|| TermsHashAddError::Other(LuceneError::null_pointer()))
-                    .and_then(|_| {
-                        writer.add_classified(
-                            pool,
-                            int_pool,
-                            &mut per_field.invert_state,
-                            term,
-                            doc_id,
-                            &inverted,
-                        )
-                    })
-                    .and_then(|text_start| {
-                        Self::add_to_vectors(
-                            term_vectors.as_deref_mut(),
-                            per_field,
-                            text_start,
-                            &inverted,
-                        )
-                        .map_err(TermsHashAddError::Other)
-                    });
-                if let Err(error) = added {
-                    return Err(Self::catch_terms_hash_add_error(
-                        info_stream,
-                        aborting_error,
-                        field.name(),
-                        term,
-                        error,
-                    ));
-                }
+                Self::invert_one_token(
+                    info_stream,
+                    terms_writer,
+                    term_vectors.as_deref_mut(),
+                    per_field,
+                    doc_id,
+                    field,
+                    is_term_doc,
+                    &token,
+                    &term_bytes,
+                    aborting_error,
+                )?;
             }
+            drop(hoisted);
 
             stream.end()?;
             let (end_position_increment, end_offset) =
@@ -3432,6 +3752,7 @@ impl DefaultIndexingChain {
                 field,
                 first,
                 &mut self.aborting_error,
+                (&mut self.owned_standard, pf),
             )?;
             if first {
                 self.per_fields[pf].first = false;
@@ -4023,10 +4344,10 @@ impl std::ops::DerefMut for ChainStoredFields {
 impl ChainStoredFields {
     /// `StoredFieldsConsumer.writeField(FieldInfo, StoredValue)`, which the
     /// sorting subclass overrides to remember that a field was stored.
-    fn write_field(&mut self, info: &FieldInfo, value: StoredValue) -> Result<()> {
+    fn write_field(&mut self, info: &FieldInfo, value: &StoredValueRef<'_>) -> Result<()> {
         match self {
-            Self::Plain(consumer) => consumer.write_field(info, value),
-            Self::Sorting(consumer) => consumer.write_field(info, value),
+            Self::Plain(consumer) => consumer.write_field_ref(info, value),
+            Self::Sorting(consumer) => consumer.write_field_ref(info, value),
         }
     }
 
@@ -4235,8 +4556,10 @@ impl DefaultIndexingChain {
         // document, and an exception the iterator throws leaves the pass
         // there.
         'first_pass: for item in doc
-            .map(IndexableFieldIterable::iterator)
-            .unwrap_or_else(|| Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+            .map(IndexableFieldIterable::fields_iter)
+            .unwrap_or_else(|| {
+                FieldsIter::Boxed(Box::new(std::iter::once(Err(LuceneError::null_pointer()))))
+            })
         {
             let field = match item {
                 Ok(field) => field,
@@ -4318,7 +4641,7 @@ impl DefaultIndexingChain {
         // 2nd pass – document fields (`IndexingChain.java:659-667`): a new
         // iteration over the document, whose failure leaves the pass too.
         let second_pass = match (&outcome, doc) {
-            (Ok(()), Some(doc)) => Some(doc.iterator()),
+            (Ok(()), Some(doc)) => Some(doc.fields_iter()),
             _ => None,
         };
         for (doc_field_idx, item) in second_pass.into_iter().flatten().enumerate() {
@@ -4350,6 +4673,7 @@ impl DefaultIndexingChain {
                         field,
                         first,
                         &mut self.aborting_error,
+                        (&mut self.owned_standard, index),
                     )
                 })) {
                     Ok(result) => result,
@@ -4420,7 +4744,7 @@ impl DefaultIndexingChain {
             // with "point value must not be null"; here the absent value is an
             // `Option`, and the same message is raised for it.
             if field_type.point_dimension_count() != 0 {
-                let result = match field.binary_value() {
+                let result = match field.binary_value_ref() {
                     Some(value) => self.per_fields[index]
                         .point_values
                         .as_mut()
@@ -5797,17 +6121,15 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            } => {
+            __lerr
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(message, "too many tokens for field \"body\"");
                 assert!(
-                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                    matches!(&cause.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                     "{cause:?}"
                 );
             }
@@ -5838,14 +6160,12 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("must be rejected");
         match &error {
-            LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            } => {
+            __lerr
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert!(
                     message.starts_with(
                         "Document contains at least one immense term in field=\"body\""
@@ -5855,8 +6175,7 @@ mod tests {
                     "{message}"
                 );
                 assert!(
-                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::MaxBytesLengthExceeded(m), .. }
-                        if m == "bytes can be at most 32766 in length; got 40000"),
+                    matches!(&cause.kind, LuceneErrorKind::MaxBytesLengthExceeded(m) if m == "bytes can be at most 32766 in length; got 40000"),
                     "{cause:?}"
                 );
             }
@@ -6147,8 +6466,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a repeated vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("appears more than once in this document")
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("appears more than once in this document")
                     && message.contains('v')),
             "unexpected error: {error:?}"
         );
@@ -6173,8 +6491,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an over-wide vector field must be rejected");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "Field [v] vector's dimensions must be <= [1024]; got 1025"),
             "unexpected error: {error:?}"
         );
         assert!(
@@ -6242,8 +6559,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("an unbound chain must refuse a vector field");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. }
-                if message.contains("not bound to a segment")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message, .. } if message.contains("not bound to a segment")),
             "unexpected error: {error:?}"
         );
     }
@@ -6637,8 +6953,7 @@ mod tests {
             .process_document(1, Some(&second), true, &mut field_infos)
             .expect_err("the schema change must be refused");
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("index options")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("index options")),
             "unexpected error: {error:?}"
         );
         assert!(chain.take_aborting_error().is_none());
@@ -6803,7 +7118,7 @@ mod tests {
         use crate::analysis::tokenattributes::{CharTermAttribute, OffsetAttribute};
         let mut state = FieldInvertState::new(10, "f".to_string(), IndexOptions::DOCS);
         assert!(matches!(
-            state.attributes().map_err(|e| e.kind),
+            state.attributes().map_err(|e| e.into_kind()),
             Err(LuceneErrorKind::Unchecked {
                 class: "java.lang.NullPointerException",
                 ..
@@ -6929,6 +7244,321 @@ mod tests {
         assert_eq!(*SEEN.lock().unwrap(), vec![true]);
     }
 
+    /// rmp #679 owned chain: a similarity that reads the invert state's
+    /// attribute source in `computeNorm` sees the same thing through the
+    /// owned chain (StandardAnalyzer) as through the shared stream (the same
+    /// analyzer behind a wrapper that describes no owned stages): the same
+    /// attribute interfaces, and the end-of-stream term, offsets and position
+    /// increment, field after field and value after value.
+    #[test]
+    fn a_non_bm25_similarity_sees_the_same_attribute_source_on_both_paths() {
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
+        };
+        use crate::analysis::{Analyzer, AnalyzerState, TokenStreamComponents};
+        use crate::document::{Store, TextField};
+
+        type Seen = (String, usize, String, i32, i32, i32, bool, i32, i32, i32);
+        static SEEN: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+        #[derive(Debug)]
+        struct SourceReadingSimilarity;
+        impl Similarity for SourceReadingSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
+            fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+                let source = state.get_attribute_source().expect("a stream was inverted");
+                let term = source
+                    .get_attribute_interface::<dyn CharTermAttribute>()
+                    .expect("term attribute");
+                let text: String = term.buffer()[..term.length()].iter().collect();
+                drop(term);
+                let offset = source
+                    .get_attribute_interface::<dyn OffsetAttribute>()
+                    .expect("offset attribute");
+                let (so, eo) = (offset.start_offset(), offset.end_offset());
+                drop(offset);
+                let pi = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .expect("position increment attribute")
+                    .get_position_increment();
+                SEEN.lock().unwrap().push((
+                    state.name().to_string(),
+                    source.attribute_classes().count(),
+                    text,
+                    so,
+                    eo,
+                    pi,
+                    source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
+                    state.length(),
+                    state.position(),
+                    state.offset(),
+                ));
+                Ok(1)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
+            }
+        }
+
+        /// StandardAnalyzer without owned stages: the shared stream.
+        #[derive(Debug)]
+        struct SharedOnly(StandardAnalyzer, AnalyzerState);
+        impl Analyzer for SharedOnly {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                &self.1
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.standard.StandardAnalyzer"
+            }
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+        }
+
+        let run = |analyzer: Arc<dyn Analyzer>| -> Vec<Seen> {
+            SEEN.lock().unwrap().clear();
+            let live = LiveIndexWriterConfig::new(Some(analyzer));
+            live.set_similarity(Arc::new(SourceReadingSimilarity));
+            let config = Arc::new(live);
+            let codec = ensure_codec();
+            let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                ByteBuffersDirectory::new(),
+            )));
+            let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+            let info = SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                -1,
+                false,
+                false,
+                codec,
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info");
+            let mut chain =
+                DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+                    .expect("bind segment");
+            let mut field_infos = builder();
+            let docs = [
+                vec![
+                    ("body", "The quick brown fox, jumps!"),
+                    ("title", "Hello World"),
+                ],
+                vec![
+                    ("body", "a"),
+                    ("body", "second value of body"),
+                    ("title", ""),
+                ],
+                vec![("title", "   trailing spaces   ")],
+            ];
+            for (doc_id, fields) in docs.iter().enumerate() {
+                let mut document = Document::new();
+                for (name, text) in fields {
+                    document.add(
+                        TextField::new(*name, text.to_string(), Store::NO).expect("text field"),
+                    );
+                }
+                chain
+                    .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
+                    .unwrap();
+            }
+            std::mem::take(&mut *SEEN.lock().unwrap())
+        };
+        let owned = run(Arc::new(StandardAnalyzer::new()));
+        let shared = run(Arc::new(SharedOnly(
+            StandardAnalyzer::new(),
+            AnalyzerState::new(Box::new(crate::analysis::GlobalReuseStrategy)),
+        )));
+        assert!(!owned.is_empty());
+        assert_eq!(owned, shared);
+    }
+
+    /// rmp #679 owned chain, mixed use: one analyzer inverts string values
+    /// through the owned chain and reader values through the shared stream,
+    /// in the same document and across documents. Lucene's single components
+    /// instance (GlobalReuseStrategy) holds one attribute source, so a
+    /// similarity reading it in `computeNorm` (after every field of the
+    /// document) sees the last inverted value's state for every field; the
+    /// owned chain must work in that same source.
+    #[test]
+    fn mixed_string_and_reader_fields_share_one_attribute_source_on_both_paths() {
+        use crate::analysis::tokenattributes::{
+            OffsetAttribute, PositionIncrementAttribute, TermFrequencyAttribute,
+        };
+        use crate::analysis::{Analyzer, AnalyzerState, TokenStreamComponents};
+        use crate::document::{Store, TextField};
+
+        type Seen = (String, usize, String, i32, i32, i32, bool, i32, i32, i32);
+        static SEEN: std::sync::Mutex<Vec<Seen>> = std::sync::Mutex::new(Vec::new());
+        #[derive(Debug)]
+        struct SourceReadingSimilarity;
+        impl Similarity for SourceReadingSimilarity {
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.search.similarities.Similarity"
+            }
+
+            fn compute_norm(&self, state: &FieldInvertState) -> Result<i64> {
+                let source = state.get_attribute_source().expect("a stream was inverted");
+                let term = source
+                    .get_attribute_interface::<dyn CharTermAttribute>()
+                    .expect("term attribute");
+                let text: String = term.buffer()[..term.length()].iter().collect();
+                drop(term);
+                let offset = source
+                    .get_attribute_interface::<dyn OffsetAttribute>()
+                    .expect("offset attribute");
+                let (so, eo) = (offset.start_offset(), offset.end_offset());
+                drop(offset);
+                let pi = source
+                    .get_attribute_interface::<dyn PositionIncrementAttribute>()
+                    .expect("position increment attribute")
+                    .get_position_increment();
+                SEEN.lock().unwrap().push((
+                    state.name().to_string(),
+                    source.attribute_classes().count(),
+                    text,
+                    so,
+                    eo,
+                    pi,
+                    source.has_attribute_interface::<dyn TermFrequencyAttribute>(),
+                    state.length(),
+                    state.position(),
+                    state.offset(),
+                ));
+                Ok(1)
+            }
+
+            fn scorer<'a>(
+                &'a self,
+                boost: f32,
+                _collection_stats: &CollectionStatistics,
+                _term_stats: &[TermStatistics],
+            ) -> Box<dyn SimScorer + 'a> {
+                struct ConstantScorer(f32);
+                impl SimScorer for ConstantScorer {
+                    fn score(&self, _freq: f32, _norm: i64) -> f32 {
+                        self.0
+                    }
+                }
+                Box::new(ConstantScorer(boost))
+            }
+        }
+
+        /// StandardAnalyzer without owned stages: the shared stream.
+        #[derive(Debug)]
+        struct SharedOnly(StandardAnalyzer, AnalyzerState);
+        impl Analyzer for SharedOnly {
+            fn analyzer_state(&self) -> &AnalyzerState {
+                &self.1
+            }
+            fn java_class_name(&self) -> &'static str {
+                "org.apache.lucene.analysis.standard.StandardAnalyzer"
+            }
+            fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
+                self.0.create_components(field_name)
+            }
+        }
+
+        let run = |analyzer: Arc<dyn Analyzer>| -> Vec<Seen> {
+            SEEN.lock().unwrap().clear();
+            let live = LiveIndexWriterConfig::new(Some(analyzer));
+            live.set_similarity(Arc::new(SourceReadingSimilarity));
+            let config = Arc::new(live);
+            let codec = ensure_codec();
+            let tracking = Arc::new(TrackingDirectoryWrapper::new(Box::new(
+                ByteBuffersDirectory::new(),
+            )));
+            let directory: Arc<dyn Directory> = Arc::clone(&tracking) as Arc<dyn Directory>;
+            let info = SegmentInfo::new(
+                Arc::clone(&directory),
+                Version::LATEST,
+                Some(Version::LATEST),
+                "_0".to_string(),
+                -1,
+                false,
+                false,
+                codec,
+                HashMap::new(),
+                [7u8; 16],
+                HashMap::new(),
+                Default::default(),
+            )
+            .expect("segment info");
+            let mut chain =
+                DefaultIndexingChain::new_for_segment(config, Arc::clone(&tracking), &info)
+                    .expect("bind segment");
+            let mut field_infos = builder();
+            enum Value {
+                Text(&'static str),
+                Reader(&'static str),
+            }
+            let docs = [
+                vec![
+                    ("body", Value::Text("The quick brown fox, jumps!")),
+                    ("rdr", Value::Reader("read from a reader")),
+                    ("title", Value::Text("Hello World")),
+                ],
+                vec![
+                    ("rdr", Value::Reader("only the reader")),
+                    ("body", Value::Text("a b")),
+                ],
+                vec![("body", Value::Text("text after"))],
+                vec![
+                    ("rdr", Value::Reader("first")),
+                    ("rdr", Value::Reader("second value, longer")),
+                    ("title", Value::Text("t")),
+                ],
+            ];
+            for (doc_id, fields) in docs.iter().enumerate() {
+                let mut document = Document::new();
+                for (name, value) in fields {
+                    match value {
+                        Value::Text(text) => document.add(
+                            TextField::new(*name, text.to_string(), Store::NO).expect("text field"),
+                        ),
+                        Value::Reader(text) => document.add(
+                            TextField::new_with_reader(
+                                *name,
+                                Box::new(crate::analysis::StringCharReader::new(*text)),
+                            )
+                            .expect("reader field"),
+                        ),
+                    }
+                }
+                chain
+                    .process_document(doc_id as i32, Some(&document), true, &mut field_infos)
+                    .unwrap();
+            }
+            std::mem::take(&mut *SEEN.lock().unwrap())
+        };
+        let owned = run(Arc::new(StandardAnalyzer::new()));
+        let shared = run(Arc::new(SharedOnly(
+            StandardAnalyzer::new(),
+            AnalyzerState::new(Box::new(crate::analysis::GlobalReuseStrategy)),
+        )));
+        assert!(!owned.is_empty());
+        assert_eq!(owned, shared);
+    }
+
     #[test]
     fn a_similarity_that_answers_zero_for_a_non_empty_field_is_rejected() {
         #[derive(Debug)]
@@ -7002,8 +7632,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a zero norm for a non-empty field must be refused");
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. }
-                if m.contains("return 0 for non-empty field")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("return 0 for non-empty field")),
             "unexpected error: {error:?}"
         );
         // The failure is document-level, not a reason to throw the segment away.
@@ -7426,13 +8055,7 @@ mod tests {
         let error = IndexingChain::bind_segment(&mut chain, tracking, &info)
             .expect_err("a chain writes exactly one segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -7447,13 +8070,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping stored data would corrupt the segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -8219,13 +8836,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("the two instances disagree on storeTermVectorPositions");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{error:?}"
         );
     }
@@ -8248,8 +8859,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("payloads need positions");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("cannot index term vector payloads without term vector positions")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("cannot index term vector payloads without term vector positions")),
             "{error:?}"
         );
     }
@@ -8277,8 +8887,7 @@ mod tests {
                 .process_document(0, Some(&document), true, &mut field_infos)
                 .expect_err("term vectors were not requested");
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                    if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains(&format!("cannot index term vector {expected} when term vectors are not indexed"))),
                 "{error:?}"
             );
         }
@@ -8300,8 +8909,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("a non-indexed field cannot store term vectors");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message.contains("cannot store term vectors for a field that is not indexed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message.contains("cannot store term vectors for a field that is not indexed")),
             "{error:?}"
         );
     }
@@ -8391,13 +8999,7 @@ mod tests {
             .process_document(0, Some(&document), true, &mut field_infos)
             .expect_err("silently dropping term vectors would corrupt the segment");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }

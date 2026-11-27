@@ -1114,8 +1114,8 @@ impl Lucene90CompressingTermVectorsWriter {
         let mut writer = BlockPackedWriter::new(self.vectors_stream.as_mut(), PACKED_BLOCK_SIZE)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
-                for i in 0..field.num_terms as usize {
-                    writer.add(field.prefix_lengths[i] as i64)?;
+                for &v in &field.prefix_lengths[..field.num_terms as usize] {
+                    writer.add(v as i64)?;
                 }
             }
         }
@@ -1124,8 +1124,8 @@ impl Lucene90CompressingTermVectorsWriter {
         let mut writer = BlockPackedWriter::new(self.vectors_stream.as_mut(), PACKED_BLOCK_SIZE)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
-                for i in 0..field.num_terms as usize {
-                    writer.add(field.suffix_lengths[i] as i64)?;
+                for &v in &field.suffix_lengths[..field.num_terms as usize] {
+                    writer.add(v as i64)?;
                 }
             }
         }
@@ -1142,8 +1142,8 @@ impl Lucene90CompressingTermVectorsWriter {
         let mut writer = BlockPackedWriter::new(self.vectors_stream.as_mut(), PACKED_BLOCK_SIZE)?;
         for doc in &self.pending_docs {
             for field in &doc.fields {
-                for i in 0..field.num_terms as usize {
-                    writer.add((field.freqs[i] - 1) as i64)?;
+                for &v in &field.freqs[..field.num_terms as usize] {
+                    writer.add((v - 1) as i64)?;
                 }
             }
         }
@@ -3087,8 +3087,8 @@ impl Fields for TVFields {
         // overflow instead, and a `usize` cast would then place the window
         // anywhere at all.
         let mut field_off = 0i64;
-        for i in 0..idx {
-            field_off += i64::from(self.field_lengths[i]);
+        for &len in &self.field_lengths[..idx] {
+            field_off += i64::from(len);
         }
         let field_len = i64::from(self.field_lengths[idx]);
         debug_assert!(field_len >= 0);
@@ -5738,16 +5738,10 @@ mod tests {
         reader.prefetch(0).unwrap();
         let result = reader.get(0).map(|_| ());
         assert!(
-            matches!(
-                result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Unchecked {
-                        class: "java.lang.ArrayIndexOutOfBoundsException",
-                        ..
-                    },
-                    ..
-                })
-            ),
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked {
+                class: "java.lang.ArrayIndexOutOfBoundsException",
+                ..
+            })),
             "{result:?}"
         );
     }
@@ -5892,11 +5886,8 @@ mod close_family_tests {
         let error = format.vectors_reader(&*dir, &info, &fis, ctx).unwrap_err();
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

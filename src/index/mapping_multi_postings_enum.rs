@@ -21,6 +21,7 @@
 
 use std::sync::Arc;
 
+use crate::codecs::lucene104::postings_reader::BlockPostingsEnum;
 use crate::error::{LuceneError, Result};
 use crate::index::merge::{DocIDMerger, DocIDMergerSub, DocMap, MergeState};
 use crate::index::multi_fields::MultiPostingsEnum;
@@ -42,6 +43,121 @@ fn null_sub_postings(method: &str, expression: &str) -> LuceneError {
     ))
 }
 
+/// A sub's postings: the core's block postings enum by its concrete type, or
+/// any other enum.
+///
+/// PERF (rmp #679, merge-side postings): Java's JIT inlines the sub calls of
+/// `MappingMultiPostingsEnum` (`nextDoc`, `freq`, `nextPosition`), which are
+/// monomorphic during a merge (`BlockPostingsEnum`). The port reached them
+/// through a `dyn` call per document and position, so a `BlockPostingsEnum`
+/// is moved out of its box when [`reset`](MappingMultiPostingsEnum::reset)
+/// takes it, through the hidden [`PostingsEnum::into_any`] hook, and every
+/// call on it is static. It goes back to its slot boxed as
+/// `dyn PostingsEnum` (no allocation either way). Any other enum keeps the
+/// `dyn` path. The calls and their results are the same.
+enum SubPostings {
+    Block(Box<BlockPostingsEnum>),
+    Dyn(Box<dyn PostingsEnum>),
+}
+
+/// Calls `$body` with `$e` bound to the enum, statically for the block enum.
+macro_rules! with_sub {
+    ($postings:expr, $e:ident => $body:expr) => {
+        match $postings {
+            SubPostings::Block($e) => $body,
+            SubPostings::Dyn($e) => $body,
+        }
+    };
+}
+
+impl SubPostings {
+    /// `postings`, by its concrete type when it is a [`BlockPostingsEnum`].
+    fn new(mut postings: Box<dyn PostingsEnum>) -> Self {
+        let is_block = postings
+            .as_any_mut()
+            .is_some_and(|any| any.is::<BlockPostingsEnum>());
+        if is_block {
+            SubPostings::Block(
+                postings
+                    .into_any()
+                    .and_then(|any| any.downcast::<BlockPostingsEnum>().ok())
+                    .expect("INVARIANT: as_any_mut named a BlockPostingsEnum"),
+            )
+        } else {
+            SubPostings::Dyn(postings)
+        }
+    }
+
+    /// `postings`, its concrete type decided once per source segment:
+    /// `block` records, on the first call, whether the segment's postings
+    /// are a [`BlockPostingsEnum`] (a segment's postings reader always hands
+    /// back the same type), and later calls unbox by that answer.
+    ///
+    /// PERF (rmp #679): one `into_any` per term instead of a type test and
+    /// an `into_any`; a segment whose postings are not block postings keeps
+    /// them boxed with no test at all.
+    fn from_reader(postings: Box<dyn PostingsEnum>, block: &mut Option<bool>) -> Self {
+        match *block {
+            None => {
+                let sub = Self::new(postings);
+                *block = Some(matches!(sub, SubPostings::Block(_)));
+                sub
+            }
+            Some(false) => SubPostings::Dyn(postings),
+            Some(true) => SubPostings::Block(
+                postings
+                    .into_any()
+                    .and_then(|any| any.downcast::<BlockPostingsEnum>().ok())
+                    .expect("INVARIANT: this segment's postings were seen to be block postings"),
+            ),
+        }
+    }
+
+    /// The enum boxed as `dyn PostingsEnum` again, for its slot.
+    fn into_dyn(self) -> Box<dyn PostingsEnum> {
+        match self {
+            SubPostings::Block(e) => e,
+            SubPostings::Dyn(e) => e,
+        }
+    }
+
+    #[inline]
+    fn next_doc(&mut self) -> Result<i32> {
+        with_sub!(self, e => e.next_doc())
+    }
+
+    #[inline]
+    fn freq(&self) -> Result<i32> {
+        with_sub!(self, e => e.freq())
+    }
+
+    #[inline]
+    fn next_position(&mut self) -> Result<i32> {
+        with_sub!(self, e => e.next_position())
+    }
+
+    fn start_offset(&self) -> i32 {
+        with_sub!(self, e => e.start_offset())
+    }
+
+    fn end_offset(&self) -> i32 {
+        with_sub!(self, e => e.end_offset())
+    }
+
+    fn get_payload(&self) -> Result<Option<&[u8]>> {
+        with_sub!(self, e => e.get_payload())
+    }
+
+    fn cost(&self) -> i64 {
+        with_sub!(self, e => e.cost())
+    }
+
+    /// `toString()` of the enum, the resource of a corruption report.
+    fn describe(&self) -> String {
+        with_sub!(self, e => e.to_string())
+    }
+}
+
 /// One source segment's postings, paired with the [`DocMap`] that renumbers its
 /// documents into the merged segment.
 ///
@@ -52,12 +168,15 @@ struct MappingPostingsSub {
     /// Java's `DocIDMerger.Sub.docMap`.
     doc_map: DocMap,
     /// Java's `postings`.
-    postings: Option<Box<dyn PostingsEnum>>,
+    postings: Option<SubPostings>,
     /// Java's `DocIDMerger.Sub.mappedDocID`.
     mapped_doc_id: i32,
     /// Index of this sub in `MappingMultiPostingsEnum::all_subs` — the source
     /// segment's reader index — so that the sub can go back to its slot.
     reader_index: usize,
+    /// Whether this segment's postings are block postings, decided on the
+    /// first term ([`SubPostings::from_reader`]).
+    block: Option<bool>,
 }
 
 impl DocIDMergerSub for MappingPostingsSub {
@@ -107,7 +226,11 @@ pub struct MappingMultiPostingsEnum {
     /// first [`reset`](Self::reset). It is kept behind the trait object so that
     /// the very allocation goes back to `MultiTermsEnum::postings` as `reuse`,
     /// as Java passes the same object; it is always a [`MultiPostingsEnum`].
-    multi_docs_and_positions_enum: Option<Box<dyn PostingsEnum>>,
+    ///
+    /// PERF: held by its concrete type (it is always a [`MultiPostingsEnum`]),
+    /// so each term reaches it without a `dyn` downcast; it is handed out
+    /// boxed as `dyn PostingsEnum`, the same allocation (rmp #679).
+    multi_docs_and_positions_enum: Option<Box<MultiPostingsEnum>>,
     /// Java's `final String field`.
     field: String,
     /// Java's `final DocIDMerger<MappingPostingsSub> docIDMerger`, which owns
@@ -165,6 +288,7 @@ impl MappingMultiPostingsEnum {
                 postings: None,
                 mapped_doc_id: -1,
                 reader_index: i,
+                block: None,
             }));
         }
         let doc_id_merger = DocIDMerger::of(Vec::new(), count, merge_state.needs_index_sort)?;
@@ -211,10 +335,29 @@ impl MappingMultiPostingsEnum {
                 ),
             ));
         }
+        let multi = postings_enum
+            .into_any()
+            .and_then(|any| any.downcast::<MultiPostingsEnum>().ok())
+            .ok_or_else(|| {
+                LuceneError::illegal_state(
+                    "INVARIANT: the enum was just checked to be a MultiPostingsEnum".to_string(),
+                )
+            })?;
+        self.reset_multi(multi)
+    }
+
+    /// [`reset`](Self::reset) over the [`MultiPostingsEnum`] by its concrete
+    /// type, for the merge's own caller (`MappedMultiTermsEnum.postings`),
+    /// which already holds it so.
+    ///
+    /// # Errors
+    ///
+    /// As [`reset`](Self::reset), less the cast.
+    pub(crate) fn reset_multi(&mut self, multi: Box<MultiPostingsEnum>) -> Result<&mut Self> {
         // Rust-only: hand the previous term's postings back to the
         // MultiPostingsEnum they came from, where Java's aliases keep them.
         self.return_sub_postings();
-        self.multi_docs_and_positions_enum = Some(postings_enum);
+        self.multi_docs_and_positions_enum = Some(multi);
 
         // subs.clear(); PERF: drained in place, so the list keeps its
         // capacity as Java's `ArrayList.clear` does
@@ -228,13 +371,7 @@ impl MappingMultiPostingsEnum {
         let multi = self
             .multi_docs_and_positions_enum
             .as_mut()
-            .and_then(|postings_enum| postings_enum.as_any_mut())
-            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked to be a MultiPostingsEnum".to_string(),
-                )
-            })?;
+            .expect("INVARIANT: set just above");
         let count = multi.get_num_subs();
         let num_readers = self.all_subs.len();
         let subs_array = multi.get_subs_mut();
@@ -256,7 +393,11 @@ impl MappingMultiPostingsEnum {
                     self.field
                 ))
             })?;
-            sub.postings = slot.postings_enum.take();
+            let block = &mut sub.block;
+            sub.postings = slot
+                .postings_enum
+                .take()
+                .map(|postings| SubPostings::from_reader(postings, block));
             self.doc_id_merger.subs_mut().push(sub);
         }
         self.doc_id_merger.reset()?;
@@ -268,18 +409,13 @@ impl MappingMultiPostingsEnum {
     /// [`reset`](Self::reset): the sub at position `i` of the merger's list
     /// came from live slot `i`.
     fn return_sub_postings(&mut self) {
-        let Some(multi) = self
-            .multi_docs_and_positions_enum
-            .as_mut()
-            .and_then(|postings_enum| postings_enum.as_any_mut())
-            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-        else {
+        let Some(multi) = self.multi_docs_and_positions_enum.as_mut() else {
             return;
         };
         let slots = multi.get_subs_mut();
         for (i, sub) in self.doc_id_merger.subs_mut().iter_mut().enumerate() {
             if let (Some(postings), Some(slot)) = (sub.postings.take(), slots.get_mut(i)) {
-                slot.postings_enum = Some(postings);
+                slot.postings_enum = Some(postings.into_dyn());
             }
         }
     }
@@ -295,7 +431,9 @@ impl MappingMultiPostingsEnum {
     /// the [`reset`](Self::reset) that follows puts the returned one in.
     pub(crate) fn take_multi_docs_and_positions_enum(&mut self) -> Option<Box<dyn PostingsEnum>> {
         self.return_sub_postings();
-        self.multi_docs_and_positions_enum.take()
+        self.multi_docs_and_positions_enum
+            .take()
+            .map(|multi| multi as Box<dyn PostingsEnum>)
     }
 
     /// Returns the [`MultiPostingsEnum`] of the last [`reset`](Self::reset),
@@ -303,7 +441,9 @@ impl MappingMultiPostingsEnum {
     /// as a test reads it.
     #[cfg(test)]
     pub(crate) fn multi_docs_and_positions_enum(&self) -> Option<&dyn PostingsEnum> {
-        self.multi_docs_and_positions_enum.as_deref()
+        self.multi_docs_and_positions_enum
+            .as_deref()
+            .map(|multi| multi as &dyn PostingsEnum)
     }
 
     /// Returns the field whose postings are being merged.
@@ -437,7 +577,7 @@ impl PostingsEnum for MappingMultiPostingsEnum {
         if pos < 0 {
             return Err(LuceneError::corrupt_index(
                 format!("position={pos} is negative, field=\"{field} doc={mapped_doc_id}"),
-                postings.to_string(),
+                postings.describe(),
             ));
         } else if pos > MAX_POSITION {
             return Err(LuceneError::corrupt_index(
@@ -445,7 +585,7 @@ impl PostingsEnum for MappingMultiPostingsEnum {
                     "position={pos} is too large (> IndexWriter.MAX_POSITION={MAX_POSITION}), \
                      field=\"{field}\" doc={mapped_doc_id}"
                 ),
-                postings.to_string(),
+                postings.describe(),
             ));
         }
         Ok(pos)
@@ -483,6 +623,10 @@ impl PostingsEnum for MappingMultiPostingsEnum {
     /// `reuse instanceof MappingMultiPostingsEnum postings`
     /// (`MappedMultiFields.java:119`).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
         Some(self)
     }
 }
@@ -903,13 +1047,9 @@ mod tests {
             ReaderSlice::new(0, 3, 0),
         )];
         let mut postings = mapping(state, subs).unwrap();
-        assert!(matches!(
-            postings.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(postings.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     #[test]
@@ -961,12 +1101,7 @@ mod tests {
         let mut postings = mapping(state, subs).unwrap();
         // `current.postings` with `current == null`: Java's
         // `NullPointerException` (`MappingMultiPostingsEnum.java:81, 110`).
-        let is_npe = |result: Result<i32>| {
-            matches!(result, Err(LuceneError {
-                kind: LuceneErrorKind::Unchecked { class, .. },
-                ..
-            }) if class == "java.lang.NullPointerException")
-        };
+        let is_npe = |result: Result<i32>| matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"));
         assert!(is_npe(postings.freq()));
         assert_eq!(postings.start_offset(), -1);
         assert_eq!(postings.end_offset(), -1);
@@ -984,7 +1119,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("is negative")),
+            matches!(&err.kind, LuceneErrorKind::CorruptIndex { message: m, .. } if m.contains("is negative")),
             "unexpected error: {err:?}"
         );
     }
@@ -1000,7 +1135,7 @@ mod tests {
         assert_eq!(postings.next_doc().unwrap(), 0);
         let err = postings.next_position().unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::CorruptIndex { message: m, .. }, .. } if m.contains("too large")),
+            matches!(&err.kind, LuceneErrorKind::CorruptIndex { message: m, .. } if m.contains("too large")),
             "unexpected error: {err:?}"
         );
     }

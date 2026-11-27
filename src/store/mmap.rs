@@ -805,20 +805,12 @@ mod tests {
     #[test]
     fn a_chunk_size_beyond_a_java_long_is_rejected() {
         let temp = TempDir::new().unwrap();
-        assert!(matches!(
-            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), usize::MAX), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
+        assert!(
+            matches!(MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), 0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
         assert_eq!(
             MMapDirectory::with_options(&temp, Box::new(NativeFSLockFactory), i64::MAX as usize)
                 .unwrap()

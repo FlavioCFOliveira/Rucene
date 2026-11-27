@@ -18,14 +18,37 @@
 //! TokenFilter that removes possessives (trailing 's) from words, ported
 //! from `org.apache.lucene.analysis.en.EnglishPossessiveFilter`.
 
-use rucene::analysis::{CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream};
+use rucene::analysis::{
+    AttributeHandle, CharTermAttribute, TokenFilter, TokenFilterLogic, TokenStream,
+};
 use rucene::error::Result;
 use rucene::util::attribute::AttributeSource;
 
 /// The body of [`EnglishPossessiveFilter`]: what Lucene's
 /// `EnglishPossessiveFilter` adds to `TokenFilter`.
 #[derive(Debug)]
-pub struct EnglishPossessiveFilterLogic;
+pub struct EnglishPossessiveFilterLogic {
+    /// `private final CharTermAttribute termAtt = addAttribute(CharTermAttribute.class)`
+    /// (`EnglishPossessiveFilter.java:28`).
+    ///
+    /// PERF: held, as Java holds it, instead of being looked up per token.
+    term_att: AttributeHandle<dyn CharTermAttribute>,
+}
+
+impl EnglishPossessiveFilterLogic {
+    /// Creates the logic of a filter whose source is `source`, adding the
+    /// `CharTermAttribute` its field holds.
+    ///
+    /// # Errors
+    ///
+    /// What the source's attribute factory raises for an interface it cannot
+    /// implement, as Java's `addAttribute` throws.
+    pub fn new(source: &mut AttributeSource) -> Result<Self> {
+        Ok(Self {
+            term_att: AttributeHandle::add(source)?,
+        })
+    }
+}
 
 impl TokenFilterLogic for EnglishPossessiveFilterLogic {
     /// Equivalent to `EnglishPossessiveFilter.incrementToken()`.
@@ -36,16 +59,14 @@ impl TokenFilterLogic for EnglishPossessiveFilterLogic {
     /// do, and the test reads the `char`s.
     fn increment_token(
         &mut self,
-        source: &mut AttributeSource,
+        _source: &mut AttributeSource,
         input: &mut dyn TokenStream,
     ) -> Result<bool> {
         if !input.increment_token()? {
             return Ok(false);
         }
 
-        let mut term_att = source
-            .get_attribute_interface_mut::<dyn CharTermAttribute>()
-            .expect("INVARIANT: the constructor added the CharTermAttribute");
+        let mut term_att = self.term_att.borrow_mut();
         let buffer_length = term_att.length();
         let buffer = term_att.buffer();
 
@@ -58,6 +79,38 @@ impl TokenFilterLogic for EnglishPossessiveFilterLogic {
             term_att.set_length(buffer_length - 2); // Strip last 2 characters off
         }
 
+        Ok(true)
+    }
+}
+
+/// `EnglishPossessiveFilter` as an owned stage (see
+/// [`rucene::analysis::owned`]): the same test and length change as
+/// [`EnglishPossessiveFilterLogic`].
+#[doc(hidden)]
+#[derive(Debug, Default)]
+pub struct OwnedEnglishPossessiveFilter;
+
+impl rucene::analysis::owned::OwnedTokenFilter for OwnedEnglishPossessiveFilter {
+    #[inline]
+    fn increment_token(
+        &mut self,
+        attrs: &mut rucene::analysis::owned::TokenAttrs<'_>,
+        input: &mut dyn rucene::analysis::owned::OwnedInput,
+    ) -> Result<bool> {
+        if !input.increment_token(attrs)? {
+            return Ok(false);
+        }
+        let term_att = &mut *attrs.term;
+        let buffer_length = term_att.length();
+        let buffer = term_att.buffer();
+        if buffer_length >= 2
+            && (buffer[buffer_length - 2] == '\''
+                || buffer[buffer_length - 2] == '\u{2019}'
+                || buffer[buffer_length - 2] == '\u{FF07}')
+            && (buffer[buffer_length - 1] == 's' || buffer[buffer_length - 1] == 'S')
+        {
+            term_att.set_length(buffer_length - 2); // Strip last 2 characters off
+        }
         Ok(true)
     }
 }
@@ -77,9 +130,5 @@ pub type EnglishPossessiveFilter = TokenFilter<EnglishPossessiveFilterLogic>;
 pub fn new_english_possessive_filter(
     input: Box<dyn TokenStream>,
 ) -> Result<EnglishPossessiveFilter> {
-    let mut filter = TokenFilter::new(input, EnglishPossessiveFilterLogic);
-    filter
-        .attribute_source_mut()
-        .add_attribute_interface::<dyn CharTermAttribute>()?;
-    Ok(filter)
+    TokenFilter::with_logic(input, EnglishPossessiveFilterLogic::new)
 }

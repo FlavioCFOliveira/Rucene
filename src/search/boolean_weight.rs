@@ -47,8 +47,12 @@ impl std::fmt::Debug for WeightedBooleanClause {
 /// package-private in Java; it is public here because Rust has no package
 /// visibility.
 pub struct BooleanWeight {
-    query: BooleanQuery,
-    query_handle: Arc<dyn Query>,
+    /// `BooleanQuery.this`, held once and handed out by `get_query`.
+    ///
+    /// PERF: Java's weight references its query; this port kept a copy of the
+    /// query and a second copy for `get_query`, both deep copies of the clause
+    /// list and clause sets, for every boolean query searched.
+    query: Arc<BooleanQuery>,
     similarity: Arc<dyn Similarity>,
     weighted_clauses: Vec<WeightedBooleanClause>,
     score_mode: ScoreMode,
@@ -79,6 +83,17 @@ impl BooleanWeight {
         score_mode: ScoreMode,
         boost: f32,
     ) -> Result<Self> {
+        Self::from_shared(Arc::new(query), searcher, score_mode, boost)
+    }
+
+    /// [`new`](Self::new) for a query held by shared reference, which the
+    /// weight keeps instead of a copy.
+    pub(crate) fn from_shared(
+        query: Arc<BooleanQuery>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Self> {
         let similarity = Arc::clone(searcher.get_similarity());
         let mut weighted_clauses = Vec::with_capacity(query.clauses().len());
         for clause in query.clauses() {
@@ -94,10 +109,8 @@ impl BooleanWeight {
                 weight,
             });
         }
-        let query_handle: Arc<dyn Query> = Arc::new(query.clone());
         Ok(Self {
             query,
-            query_handle,
             similarity,
             weighted_clauses,
             score_mode,
@@ -217,7 +230,7 @@ impl SegmentCacheable for BooleanWeight {
 
 impl Weight for BooleanWeight {
     fn get_query(&self) -> Arc<dyn Query> {
-        Arc::clone(&self.query_handle)
+        Arc::clone(&self.query) as Arc<dyn Query>
     }
 
     /// Answers `weight instanceof BooleanWeight` (`TestMinShouldMatch2`

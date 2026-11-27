@@ -189,4 +189,10 @@ impl SimScorer for SharedSimScorerRef {
     fn explain(&self, freq: &Explanation, norm: i64) -> Explanation {
         self.0.explain(freq, norm)
     }
+
+    fn owned_bulk_sim_scorer(
+        &self,
+    ) -> Option<Box<dyn crate::search::similarities::BulkSimScorer + Send + Sync>> {
+        self.0.owned_bulk_sim_scorer()
+    }
 }

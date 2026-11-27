@@ -15,7 +15,7 @@ use crate::error::{LuceneError, Result};
 use crate::index::doc_values::DocValuesIterator;
 use crate::index::vector_values::DocIndexIterator;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{IndexInput, IndexOutput, RandomAccessInput};
+use crate::store::{IndexInput, IndexOutput, MemorySegment, RandomAccessInput};
 use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::FixedBitSet;
 
@@ -296,15 +296,147 @@ impl JumpTable {
     }
 }
 
+/// The bytes of `slice`, positioned as its file pointer, when it is a
+/// memory-mapped input whose whole range lies in one mapped segment; `None`
+/// otherwise, or when the input refuses the request (closed).
+///
+/// Reached through Lucene's own `MemorySegmentAccessInput.segmentSliceOrNull`
+/// ([`IndexInput::as_memory_segment_access_input`]); see
+/// [`IndexedDISI`]'s `block_bytes` for how the scan uses it.
+pub(crate) fn block_segment_of(slice: &dyn IndexInput) -> Option<MemorySegment> {
+    slice
+        .as_memory_segment_access_input()?
+        .segment_slice_or_null(0, slice.length())
+        .ok()
+        .flatten()
+}
+
+/// What [`scan_block_bytes`] found.
+struct BlockScan {
+    /// The number of shorts read before the one that stopped the scan (all
+    /// the shorts read when nothing stopped it).
+    skipped: usize,
+    /// The doc id in block that stopped the scan: the first one at or after
+    /// the target.
+    found: Option<i32>,
+    /// Whether the scan stopped because `bytes` ran out before `remaining`
+    /// shorts were read: the next short must then be read through the slice.
+    unservable: bool,
+}
+
+/// The index of the first little-endian unsigned short of `window` that is
+/// `>= target_in_block`, or `None`.
+///
+/// The same answer as reading the shorts one by one and stopping at the
+/// first match; the shorts are compared sixteen at a time, in a fixed-size
+/// loop the compiler turns into vector compares, the doc ids of a SPARSE
+/// block being scanned linearly by Java too (`// TODO: binary search`).
+#[inline]
+fn first_at_or_after(window: &[u8], target_in_block: i32) -> Option<usize> {
+    const LANES: usize = 16;
+    // `target & 0xFFFF` at every caller, so the comparison fits 16 bits.
+    debug_assert!((0..=0xFFFF).contains(&target_in_block));
+    let target = target_in_block as u16;
+    let at_least = |pair: &[u8; 2]| u16::from_le_bytes(*pair) >= target;
+    let (pairs, _) = window.as_chunks::<2>();
+    let (blocks, rest) = pairs.as_chunks::<LANES>();
+    for (block, lanes) in blocks.iter().enumerate() {
+        let mut mask = 0u32;
+        for (lane, pair) in lanes.iter().enumerate() {
+            mask |= u32::from(at_least(pair)) << lane;
+        }
+        if mask != 0 {
+            return Some(block * LANES + mask.trailing_zeros() as usize);
+        }
+    }
+    rest.iter()
+        .position(at_least)
+        .map(|at| blocks.len() * LANES + at)
+}
+
+/// The SPARSE scan of `IndexedDISI.java:583-593` and `:607-621` over the
+/// in-memory bytes: reads at most `remaining` unsigned shorts from `bytes`
+/// starting at `fp`, until the first one `>= target_in_block`.
+///
+/// Every short read is the one `slice.readShort()` would return at the same
+/// position; the scan stops early (`unservable`) at the first short that is
+/// not all inside `bytes`.
+#[inline]
+fn scan_block_bytes(bytes: &[u8], fp: i64, remaining: i64, target_in_block: i32) -> BlockScan {
+    let available = usize::try_from(fp)
+        .ok()
+        .and_then(|fp| bytes.get(fp..))
+        .unwrap_or(&[]);
+    let wanted = usize::try_from(remaining.max(0)).unwrap_or(usize::MAX);
+    let servable = cmp::min(wanted, available.len() / 2);
+    let window = &available[..servable * 2];
+    match first_at_or_after(window, target_in_block) {
+        Some(at) => BlockScan {
+            skipped: at,
+            found: Some(i32::from(u16::from_le_bytes([
+                window[2 * at],
+                window[2 * at + 1],
+            ]))),
+            unservable: false,
+        },
+        None => BlockScan {
+            skipped: servable,
+            found: None,
+            unservable: servable < wanted,
+        },
+    }
+}
+
 /// An indexed, random-accessible DISI.
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene90.IndexedDISI`.
 pub struct IndexedDISI {
     slice: Box<dyn IndexInput>,
+    /// The bytes of `slice` in memory ([`block_segment_of`]), or of the shared
+    /// block slice a norms merge instance wraps
+    /// ([`set_block_segment`](Self::set_block_segment)).
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java's SPARSE scan reads each doc id with `slice.readShort()`
+    /// (`IndexedDISI.java:597-623`, `:648-660`), which the JIT inlines into a
+    /// plain load. A Rust `Box<dyn IndexInput>` pays a dynamic call per short
+    /// (plus, on a merge instance, the shared-input borrow and seek of
+    /// `getDisiInput`'s wrapper), which made the scan ~4x Lucene's cost (rmp
+    /// #675). The scan therefore reads the shorts straight from these bytes
+    /// — the same bytes, at the same positions, that `readShort` would return —
+    /// and keeps the position it reaches in `scan_fp`, so that `slice` is
+    /// where Java's would be whenever it is read again. Any read the bytes
+    /// cannot serve (a position past the end, a closed input) goes through
+    /// `slice` itself, which raises exactly what Java raises; without bytes
+    /// the scan is Java's.
+    block_bytes: Option<MemorySegment>,
+    /// The file pointer the SPARSE scan over `block_bytes` reached and has
+    /// not yet written back to `slice`, or `None` when `slice`'s own file
+    /// pointer is current.
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java's scan moves `slice`'s position with every `readShort()`. Taking
+    /// the file pointer and seeking `slice` on every `advanceExact` costs two
+    /// dynamic calls per scored document here (rmp #676), so the position is
+    /// written back lazily, by [`sync_slice`](Self::sync_slice), before any
+    /// other use of `slice`. `slice` is private to this iterator (Java's
+    /// `IndexedDISI.slice` field; every caller hands over a slice of its own,
+    /// or the merge instance's wrapper with its own offset), so nothing else
+    /// can observe its position in between.
+    scan_fp: Option<i64>,
     jump_table: Option<JumpTable>,
     jump_table_entry_count: i32,
     dense_rank_power: i8,
     dense_rank_table: Vec<u8>,
+    /// The length of `denseRankTable` (`DENSE_BLOCK_LONGS >> (denseRankPower
+    /// - 7)`, `0` without a rank power).
+    ///
+    /// PERF (rmp #679): `dense_rank_table` is allocated on the first DENSE
+    /// block instead of at construction (a merge builds one `IndexedDISI`
+    /// per term and field through `getNorms`, mostly over SPARSE blocks);
+    /// it is read only after a DENSE block filled it, so every read sees the
+    /// same bytes.
+    dense_rank_table_size: usize,
     cost: i64,
 
     block: i32,
@@ -397,17 +529,21 @@ impl IndexedDISI {
         } else {
             dense_rank_power as usize - 7
         };
-        let dense_rank_table = if dense_rank_power == -1 {
-            Vec::new()
+        let dense_rank_table_size = if dense_rank_power == -1 {
+            0
         } else {
-            vec![0u8; DENSE_BLOCK_LONGS >> rank_index_shift]
+            DENSE_BLOCK_LONGS >> rank_index_shift
         };
+        let block_bytes = block_segment_of(slice.as_ref());
         Ok(Self {
             slice,
+            block_bytes,
+            scan_fp: None,
             jump_table,
             jump_table_entry_count,
             dense_rank_power,
-            dense_rank_table,
+            dense_rank_table: Vec::new(),
+            dense_rank_table_size,
             cost,
             block: -1,
             block_end: 0,
@@ -429,6 +565,34 @@ impl IndexedDISI {
     /// Returns the ordinal (index) of the current document.
     pub fn index(&self) -> i32 {
         self.index
+    }
+
+    /// Sets the in-memory bytes of `slice` when `slice` cannot give them
+    /// itself: the wrapper a norms merge instance hands out over its shared
+    /// block slice (`Lucene90NormsProducer.getDisiInput`), whose file pointer
+    /// is a position in that slice.
+    pub(crate) fn set_block_segment(&mut self, block_bytes: Option<MemorySegment>) {
+        self.block_bytes = block_bytes;
+    }
+
+    /// Writes the position the scan over `block_bytes` reached back to
+    /// `slice` (see `scan_fp`); a no-op when `slice` is current.
+    #[inline]
+    fn sync_slice(&mut self) -> Result<()> {
+        if let Some(fp) = self.scan_fp {
+            self.slice.seek(fp)?;
+            self.scan_fp = None;
+        }
+        Ok(())
+    }
+
+    /// `slice.getFilePointer()`, the pending scan position included.
+    #[inline]
+    fn slice_file_pointer(&self) -> Result<i64> {
+        match self.scan_fp {
+            Some(fp) => Ok(fp),
+            None => self.slice.file_pointer(),
+        }
     }
 
     /// Returns an iterator that delegates to this `IndexedDISI`. Advancing the
@@ -461,12 +625,14 @@ impl IndexedDISI {
                 let index = jump_table.read_int_at(base)?;
                 let offset = jump_table.read_int_at(base + 4)?;
                 self.next_block_index = index.wrapping_sub(1);
+                self.sync_slice()?;
                 self.slice.seek(offset as i64)?;
                 self.read_block_header()?;
                 return Ok(());
             }
         }
         while self.block < target_block {
+            self.sync_slice()?;
             self.slice.seek(self.block_end)?;
             self.read_block_header()?;
         }
@@ -474,6 +640,7 @@ impl IndexedDISI {
     }
 
     fn read_block_header(&mut self) -> Result<()> {
+        self.sync_slice()?;
         let block_short = self.slice.read_short()? as u16;
         // `Short.toUnsignedInt(slice.readShort()) << 16`, an `int` shift that
         // wraps for a corrupt short with its top bit set, which Java only
@@ -501,11 +668,14 @@ impl IndexedDISI {
                 + if self.dense_rank_power == -1 {
                     0
                 } else {
-                    self.dense_rank_table.len() as i64
+                    self.dense_rank_table_size as i64
                 };
             self.block_end = self.dense_bitmap_offset + (1i64 << 13);
             if self.dense_rank_power != -1 {
-                let len = self.dense_rank_table.len();
+                let len = self.dense_rank_table_size;
+                if self.dense_rank_table.len() != len {
+                    self.dense_rank_table.resize(len, 0);
+                }
                 self.slice
                     .read_bytes(Some(&mut self.dense_rank_table), 0, len)?;
             }
@@ -530,6 +700,39 @@ impl IndexedDISI {
     }
 
     fn sparse_advance(&mut self, target: i32) -> Result<bool> {
+        // PERF: see `block_bytes` and `scan_fp`.
+        if let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) {
+            let target_in_block = target & 0xFFFF;
+            let start = self.slice_file_pointer()?;
+            let remaining = i64::from(self.next_block_index) - i64::from(self.index);
+            let scan = scan_block_bytes(segment.bytes(), start, remaining, target_in_block);
+            // `disi.index++` once per short read, as `int` (which wraps).
+            self.index = self.index.wrapping_add(scan.skipped as i32);
+            let mut fp = start + 2 * scan.skipped as i64;
+            if let Some(doc_in_block) = scan.found {
+                self.index = self.index.wrapping_add(1);
+                fp += 2;
+                self.doc = self.block | doc_in_block;
+                self.exists = true;
+                self.next_exist_doc_in_block = doc_in_block;
+                self.scan_fp = Some(fp);
+                return Ok(true);
+            }
+            if scan.unservable {
+                // Not in the bytes: `slice` reads (and fails) as Java does.
+                self.slice.seek(fp)?;
+                self.scan_fp = None;
+                return self.sparse_advance_scan(target);
+            }
+            self.scan_fp = Some(fp);
+            return Ok(false);
+        }
+        self.sparse_advance_scan(target)
+    }
+
+    /// The SPARSE `advanceWithinBlock` loop, reading through `slice`.
+    fn sparse_advance_scan(&mut self, target: i32) -> Result<bool> {
+        self.sync_slice()?;
         let target_in_block = target & 0xFFFF;
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
@@ -545,6 +748,7 @@ impl IndexedDISI {
     }
 
     fn dense_advance(&mut self, target: i32) -> Result<bool> {
+        self.sync_slice()?;
         let target_in_block = target & 0xFFFF;
         let target_word_index = target_in_block >> 6;
         if self.dense_rank_power != -1
@@ -584,6 +788,7 @@ impl IndexedDISI {
 
     fn rank_skip(&mut self, target_in_block: i32) -> Result<()> {
         debug_assert!(self.dense_rank_power >= 0);
+        self.sync_slice()?;
         let rank_index = target_in_block >> self.dense_rank_power;
         let rank = ((self.dense_rank_table[(rank_index << 1) as usize] as u16 as u32) << 8)
             | (self.dense_rank_table[((rank_index << 1) + 1) as usize] as u16 as u32);
@@ -619,6 +824,41 @@ impl IndexedDISI {
         if target == self.doc {
             return Ok(self.exists);
         }
+        // PERF: see `block_bytes` and `scan_fp`.
+        if let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) {
+            let start = self.slice_file_pointer()?;
+            let remaining = i64::from(self.next_block_index) - i64::from(self.index);
+            let scan = scan_block_bytes(segment.bytes(), start, remaining, target_in_block);
+            // `disi.index++` once per short read, as `int`; a short past the
+            // target is read and then given back (`disi.index--` and the seek
+            // back of `IndexedDISI.java:612-616`), so neither moves for it.
+            self.index = self.index.wrapping_add(scan.skipped as i32);
+            let fp = start + 2 * scan.skipped as i64;
+            if let Some(doc_in_block) = scan.found {
+                self.next_exist_doc_in_block = doc_in_block;
+                if doc_in_block == target_in_block {
+                    self.index = self.index.wrapping_add(1);
+                    self.exists = true;
+                    self.scan_fp = Some(fp + 2);
+                    return Ok(true);
+                }
+            } else if scan.unservable {
+                // Not in the bytes: `slice` reads (and fails) as Java does.
+                self.slice.seek(fp)?;
+                self.scan_fp = None;
+                return self.sparse_advance_exact_scan(target);
+            }
+            self.scan_fp = Some(fp);
+            self.exists = false;
+            return Ok(false);
+        }
+        self.sparse_advance_exact_scan(target)
+    }
+
+    /// The SPARSE `advanceExactWithinBlock` loop, reading through `slice`.
+    fn sparse_advance_exact_scan(&mut self, target: i32) -> Result<bool> {
+        self.sync_slice()?;
+        let target_in_block = target & 0xFFFF;
         while self.index < self.next_block_index {
             let doc_in_block = self.slice.read_short()? as u16 as i32;
             self.index = self.index.wrapping_add(1);
@@ -651,6 +891,7 @@ impl IndexedDISI {
         bit_set: &mut FixedBitSet,
         offset: i32,
     ) -> Result<bool> {
+        self.sync_slice()?;
         match self.method {
             Method::Sparse => {
                 bit_set.set(self.doc.wrapping_sub(offset) as usize);
@@ -714,6 +955,7 @@ impl IndexedDISI {
         let source_from = self.doc & 0xFFFF;
         let source_to = cmp::min(dest_to.wrapping_sub(self.block), BLOCK_SIZE as i32);
 
+        self.sync_slice()?;
         let fp = self.slice.file_pointer()?;
         // seek back a long to include current word (disi.word).
         self.slice.seek(fp - 8)?;
@@ -762,11 +1004,22 @@ impl IndexedDISI {
         {
             self.rank_skip(target_in_block)?;
         }
-        for _ in self.word_index.wrapping_add(1)..=target_word_index {
-            self.word = self.slice.read_long()? as u64;
-            self.number_of_ones = self
-                .number_of_ones
-                .wrapping_add(self.word.count_ones() as i32);
+        let first_word = self.word_index.wrapping_add(1);
+        if first_word <= target_word_index {
+            // PERF (rmp #681): the words `slice.readLong()` returns
+            // (`IndexedDISI.java:668-672`), read from the mapped block bytes
+            // at the same positions when they are all there; the position
+            // reached is written back lazily, as the SPARSE scan does (see
+            // `block_bytes` and `scan_fp`). Otherwise through `slice`.
+            if !self.dense_words_from_bytes(first_word, target_word_index)? {
+                self.sync_slice()?;
+                for _ in first_word..=target_word_index {
+                    self.word = self.slice.read_long()? as u64;
+                    self.number_of_ones = self
+                        .number_of_ones
+                        .wrapping_add(self.word.count_ones() as i32);
+                }
+            }
         }
         self.word_index = target_word_index;
         let left_bits = self.word >> (target & 0x3F);
@@ -774,6 +1027,38 @@ impl IndexedDISI {
             .number_of_ones
             .wrapping_sub(left_bits.count_ones() as i32);
         Ok((left_bits & 1) != 0)
+    }
+
+    /// Reads the DENSE words `first..=last` from `block_bytes`, accumulating
+    /// `word` and `number_of_ones` exactly as the `slice.readLong()` loop
+    /// does, and records the position reached in `scan_fp`. Returns `false`,
+    /// having changed nothing, when the bytes are absent, closed or do not
+    /// hold every word: the caller then reads through `slice`.
+    #[inline]
+    fn dense_words_from_bytes(&mut self, first: i32, last: i32) -> Result<bool> {
+        let Some(segment) = self.block_bytes.as_ref().filter(|s| s.is_alive()) else {
+            return Ok(false);
+        };
+        let start = self.slice_file_pointer()?;
+        let count = (last - first + 1) as usize;
+        let Some(window) = usize::try_from(start).ok().and_then(|at| {
+            segment
+                .bytes()
+                .get(at..at.checked_add(count.checked_mul(8)?)?)
+        }) else {
+            return Ok(false);
+        };
+        let (words, _) = window.as_chunks::<8>();
+        let mut number_of_ones = self.number_of_ones;
+        let mut word = self.word;
+        for bytes in words {
+            word = u64::from_le_bytes(*bytes);
+            number_of_ones = number_of_ones.wrapping_add(word.count_ones() as i32);
+        }
+        self.word = word;
+        self.number_of_ones = number_of_ones;
+        self.scan_fp = Some(start + 8 * count as i64);
+        Ok(true)
     }
 }
 
@@ -1031,5 +1316,167 @@ mod tests {
             assert_eq!(disi.index(), seen.len() as i32 - 1);
         }
         assert_eq!(seen, docs);
+    }
+
+    /// rmp #676: the scan over the mapped bytes (`block_bytes`, with the
+    /// lazily written-back `scan_fp` and the sixteen-lane compare) answers
+    /// every `advance_exact`, `advance` and `next_doc` exactly as the scan
+    /// through `slice` does, across SPARSE, DENSE and ALL blocks and the
+    /// moves between them; and a SPARSE block whose doc count runs past the
+    /// end of the slice fails identically on both paths.
+    #[test]
+    fn mapped_sparse_scan_matches_the_slice_scan() {
+        use crate::store::mmap::MMapDirectory;
+        use crate::store::Directory as _;
+
+        // Block 0 SPARSE, block 1 DENSE, block 2 ALL, block 3 SPARSE (short),
+        // block 5 SPARSE (block 4 empty).
+        let mut docs: Vec<i32> = (0..3000).map(|i| i * 21 + (i % 7)).collect();
+        docs.extend((0..20_000).map(|i| 65_536 + i * 3));
+        docs.extend(2 * 65_536..3 * 65_536);
+        docs.extend((0..40).map(|i| 3 * 65_536 + i * 977));
+        docs.extend((0..4095).map(|i| 5 * 65_536 + i * 16));
+        let mut out = MockIndexOutput::new("test", "test");
+        let jump_count = write_bit_set(
+            &mut VecDocIter::new(docs.clone()),
+            &mut out,
+            DEFAULT_DENSE_RANK_POWER,
+        )
+        .unwrap();
+        let mut bytes = vec![0xA5u8; 3];
+        bytes.extend(out.into_inner());
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().canonicalize().unwrap();
+        std::fs::write(path.join("d.bin"), &bytes).unwrap();
+        let dir = MMapDirectory::open(path).unwrap();
+        let mapped_input = dir
+            .open_input("d.bin", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let plain_input = crate::store::MockIndexInput::new(bytes.clone(), "test");
+        let length = bytes.len() as i64 - 3;
+        let open = |input: &dyn IndexInput| {
+            IndexedDISI::new(
+                input,
+                3,
+                length,
+                jump_count as i32,
+                DEFAULT_DENSE_RANK_POWER,
+                docs.len() as i64,
+            )
+            .unwrap()
+        };
+
+        let max = 6 * 65_536;
+        for seed in 1..=40u64 {
+            let mut mapped = open(mapped_input.as_ref());
+            let mut plain = open(&plain_input);
+            // Positive control: one takes the mapped scan, the other cannot.
+            assert!(mapped.block_bytes.is_some());
+            assert!(plain.block_bytes.is_none());
+            let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut next = || {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state
+            };
+            let mut target = 0i32;
+            let mut exact_mode = seed % 2 == 0;
+            loop {
+                let r = next();
+                if r % 50 == 0 {
+                    exact_mode = !exact_mode;
+                }
+                // Steps of 1 to ~200 docs, now and then a long jump.
+                let step = if r % 23 == 0 {
+                    (r >> 8) % 70_000
+                } else {
+                    1 + (r >> 8) % 200
+                };
+                target = target.saturating_add(step as i32);
+                if target >= max {
+                    break;
+                }
+                if exact_mode {
+                    let m = mapped.advance_exact(target).unwrap();
+                    let p = plain.advance_exact(target).unwrap();
+                    assert_eq!(m, p, "advance_exact({target}) seed {seed}");
+                    if m {
+                        assert_eq!(mapped.index(), plain.index(), "index at {target}");
+                    }
+                } else if r % 3 == 0 {
+                    let m = mapped.next_doc().unwrap();
+                    let p = plain.next_doc().unwrap();
+                    assert_eq!(m, p, "next_doc after {target} seed {seed}");
+                    assert_eq!(mapped.index(), plain.index());
+                    if m == NO_MORE_DOCS {
+                        break;
+                    }
+                    target = m;
+                } else {
+                    if target <= mapped.doc_id() {
+                        continue;
+                    }
+                    let m = mapped.advance(target).unwrap();
+                    let p = plain.advance(target).unwrap();
+                    assert_eq!(m, p, "advance({target}) seed {seed}");
+                    assert_eq!(mapped.index(), plain.index());
+                    if m == NO_MORE_DOCS {
+                        break;
+                    }
+                    target = m;
+                }
+                assert_eq!(mapped.doc_id(), plain.doc_id());
+            }
+        }
+
+        // A SPARSE block claiming 100 docs with only 3 in the slice: both
+        // scans read past the end and fail with the same error.
+        let mut corrupt = vec![0xA5u8; 3];
+        corrupt.extend_from_slice(&0u16.to_le_bytes()); // block 0
+        corrupt.extend_from_slice(&99u16.to_le_bytes()); // 100 docs
+        for doc in [4u16, 9, 30] {
+            corrupt.extend_from_slice(&doc.to_le_bytes());
+        }
+        std::fs::write(temp.path().join("c.bin"), &corrupt).unwrap();
+        let mapped_input = dir
+            .open_input("c.bin", &*crate::store::DEFAULT_IO_CONTEXT)
+            .unwrap();
+        let plain_input = crate::store::MockIndexInput::new(corrupt.clone(), "c.bin");
+        let corrupt_length = corrupt.len() as i64 - 3;
+        let open = |input: &dyn IndexInput| {
+            IndexedDISI::with_slices(
+                input.slice("docs", 3, corrupt_length).unwrap(),
+                None,
+                -1,
+                DEFAULT_DENSE_RANK_POWER,
+                100,
+            )
+            .unwrap()
+        };
+        let mut mapped = open(mapped_input.as_ref());
+        assert!(mapped.block_bytes.is_some());
+        assert!(mapped.advance_exact(9).unwrap());
+        let mapped_err = mapped.advance_exact(500).unwrap_err();
+        let mut mapped_again = open(mapped_input.as_ref());
+        let mapped_advance_err = mapped_again.advance(500).unwrap_err();
+        // The slice scan of a mapped input is the reference here: the error
+        // names the mapped input, so compare against it with no bytes.
+        let mut reference = open(mapped_input.as_ref());
+        reference.set_block_segment(None);
+        assert!(reference.advance_exact(9).unwrap());
+        let reference_err = reference.advance_exact(500).unwrap_err();
+        assert_eq!(format!("{mapped_err:?}"), format!("{reference_err:?}"));
+        let mut reference = open(mapped_input.as_ref());
+        reference.set_block_segment(None);
+        assert_eq!(
+            format!("{mapped_advance_err:?}"),
+            format!("{:?}", reference.advance(500).unwrap_err())
+        );
+        // And the plain input fails at the same point.
+        let mut plain = open(&plain_input);
+        assert!(plain.advance_exact(9).unwrap());
+        assert!(plain.advance_exact(500).is_err());
     }
 }

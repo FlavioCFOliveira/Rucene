@@ -36,6 +36,7 @@ use std::{
     fmt::{Debug, Formatter},
 };
 
+use crate::codecs::lucene103::segment_terms_enum::SegmentTermsEnum;
 use crate::error::{LuceneError, Result};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::util::BytesRef;
@@ -117,10 +118,55 @@ pub fn prefix8_to_comparable_unsigned_long(term: &BytesRef) -> u64 {
 /// therefore an `Option`, and every operation that would dereference a `null`
 /// enum in Java reports the `NullPointerException` as
 /// [`LuceneErrorKind::IllegalState`](crate::error::LuceneErrorKind::IllegalState) with the JDK's message.
-pub struct TermsEnumIndex {
-    terms_enum: Option<Box<dyn TermsEnum>>,
+pub struct TermsEnumIndex<'a> {
+    terms_enum: Option<SubTermsEnum<'a>>,
     sub_index: usize,
     current: CurrentTerm,
+}
+
+/// The enum a [`TermsEnumIndex`] wraps: the core's block-tree enum by its
+/// concrete type, or any other enum.
+///
+/// **Port-only (rmp #679).** Java's JIT inlines a merge's per-term `next()`
+/// and `postings()` into the monomorphic `SegmentTermsEnum`; a
+/// `SegmentTermsEnum` handed in is unboxed once (through the hidden
+/// [`TermsEnum::into_any`] hook, after [`TermsEnum::as_any`] named it) and
+/// called statically. Any other enum keeps the `dyn` path.
+enum SubTermsEnum<'a> {
+    Segment(Box<SegmentTermsEnum>),
+    Dyn(Box<dyn TermsEnum + 'a>),
+}
+
+impl<'a> SubTermsEnum<'a> {
+    fn new(terms_enum: Box<dyn TermsEnum + 'a>) -> Self {
+        let is_segment = terms_enum
+            .as_any()
+            .is_some_and(|any| any.is::<SegmentTermsEnum>());
+        if is_segment {
+            SubTermsEnum::Segment(
+                terms_enum
+                    .into_any()
+                    .and_then(|any| any.downcast::<SegmentTermsEnum>().ok())
+                    .expect("INVARIANT: as_any named a SegmentTermsEnum"),
+            )
+        } else {
+            SubTermsEnum::Dyn(terms_enum)
+        }
+    }
+
+    fn as_dyn(&self) -> &(dyn TermsEnum + 'a) {
+        match self {
+            SubTermsEnum::Segment(e) => e.as_ref(),
+            SubTermsEnum::Dyn(e) => e.as_ref(),
+        }
+    }
+
+    fn as_dyn_mut(&mut self) -> &mut (dyn TermsEnum + 'a) {
+        match self {
+            SubTermsEnum::Segment(e) => e.as_mut(),
+            SubTermsEnum::Dyn(e) => e.as_mut(),
+        }
+    }
 }
 
 /// Java's `currentTerm` and `currentTermPrefix8` (`TermsEnumIndex.java:71-72`).
@@ -165,7 +211,7 @@ impl CurrentTerm {
     }
 }
 
-impl std::fmt::Display for TermsEnumIndex {
+impl std::fmt::Display for TermsEnumIndex<'_> {
     /// Port of `TermsEnumIndex.toString()`
     /// (`TermsEnumIndex.java:153-156`), which is `Objects.toString(termsEnum)`
     /// — the wrapped enumeration's own rendering, and nothing else, or the
@@ -174,7 +220,7 @@ impl std::fmt::Display for TermsEnumIndex {
     /// renders exactly the same string as that enumeration does on its own.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.terms_enum {
-            Some(terms_enum) => std::fmt::Display::fmt(terms_enum, f),
+            Some(terms_enum) => std::fmt::Display::fmt(terms_enum.as_dyn(), f),
             None => f.write_str("null"),
         }
     }
@@ -188,25 +234,25 @@ fn null_terms_enum(method: &str) -> LuceneError {
     ))
 }
 
-impl TermsEnumIndex {
+impl<'a> TermsEnumIndex<'a> {
     /// Wraps `terms_enum`, tagging it with `sub_index`.
     ///
     /// The wrapper starts unpositioned: [`term`](Self::term) returns `None`
     /// until the enum is moved.
     ///
     /// Equivalent to `TermsEnumIndex(TermsEnum, int)`.
-    pub fn new(terms_enum: Box<dyn TermsEnum>, sub_index: usize) -> Self {
+    pub fn new(terms_enum: Box<dyn TermsEnum + 'a>, sub_index: usize) -> Self {
         Self::with_optional_enum(Some(terms_enum), sub_index)
     }
 
     /// Equivalent to `TermsEnumIndex(TermsEnum, int)` called with a `termsEnum`
     /// that may be `null`, as `MultiTermsEnum.TermsEnumWithSlice` calls it.
     pub(crate) fn with_optional_enum(
-        terms_enum: Option<Box<dyn TermsEnum>>,
+        terms_enum: Option<Box<dyn TermsEnum + 'a>>,
         sub_index: usize,
     ) -> Self {
         Self {
-            terms_enum,
+            terms_enum: terms_enum.map(SubTermsEnum::new),
             sub_index,
             current: CurrentTerm::default(),
         }
@@ -225,7 +271,9 @@ impl TermsEnumIndex {
     /// Equivalent to reading the `TermsEnumIndex.termsEnum` field, which Java
     /// leaves `null` until a `TermsEnumWithSlice` is reset.
     pub fn terms_enum(&self) -> Option<&dyn TermsEnum> {
-        self.terms_enum.as_deref()
+        self.terms_enum
+            .as_ref()
+            .map(|terms_enum| terms_enum.as_dyn() as &dyn TermsEnum)
     }
 
     /// Returns the wrapped enum mutably, for operations that read the current
@@ -240,7 +288,7 @@ impl TermsEnumIndex {
     /// methods on this wrapper instead.
     pub fn terms_enum_mut(&mut self) -> Option<&mut dyn TermsEnum> {
         match &mut self.terms_enum {
-            Some(terms_enum) => Some(terms_enum.as_mut()),
+            Some(terms_enum) => Some(terms_enum.as_dyn_mut()),
             None => None,
         }
     }
@@ -264,11 +312,28 @@ impl TermsEnumIndex {
     /// naming the `method` about to be invoked on it; takes the field so that
     /// the term the enum lends can be stored beside it.
     fn enum_in<'e>(
-        terms_enum: &'e mut Option<Box<dyn TermsEnum>>,
+        terms_enum: &'e mut Option<SubTermsEnum<'a>>,
         method: &str,
     ) -> Result<&'e mut dyn TermsEnum> {
         match terms_enum {
-            Some(terms_enum) => Ok(terms_enum.as_mut()),
+            Some(terms_enum) => Ok(terms_enum.as_dyn_mut()),
+            None => Err(null_terms_enum(method)),
+        }
+    }
+
+    /// `termsEnum.postings(reuse, flags)` on the wrapped enum, statically for
+    /// a [`SegmentTermsEnum`] (rmp #679), or Java's `NullPointerException`
+    /// for a `null` one, naming `method`.
+    #[inline]
+    pub(crate) fn postings(
+        &mut self,
+        reuse: Option<Box<dyn crate::index::PostingsEnum>>,
+        flags: i32,
+        method: &str,
+    ) -> Result<Option<Box<dyn crate::index::PostingsEnum>>> {
+        match &mut self.terms_enum {
+            Some(SubTermsEnum::Segment(e)) => e.postings(reuse, flags),
+            Some(SubTermsEnum::Dyn(e)) => e.postings(reuse, flags),
             None => Err(null_terms_enum(method)),
         }
     }
@@ -288,7 +353,12 @@ impl TermsEnumIndex {
     // signature nor the borrow shape fits that trait.
     #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<&BytesRef>> {
-        let term = Self::enum_in(&mut self.terms_enum, "next()")?.next()?;
+        // PERF (rmp #679): static for a `SegmentTermsEnum`.
+        let term = match &mut self.terms_enum {
+            Some(SubTermsEnum::Segment(e)) => e.next()?,
+            Some(SubTermsEnum::Dyn(e)) => e.next()?,
+            None => return Err(null_terms_enum("next()")),
+        };
         self.current.set(term);
         Ok(self.current.get())
     }
@@ -367,7 +437,7 @@ impl TermsEnumIndex {
     /// `other` is consumed instead. Aliased ownership is exactly what the Java
     /// version leaves the caller responsible for avoiding; taking `other` by
     /// value makes that responsibility unnecessary.
-    pub fn reset(&mut self, other: TermsEnumIndex) {
+    pub fn reset(&mut self, other: TermsEnumIndex<'a>) {
         self.terms_enum = other.terms_enum;
         self.current = other.current;
     }
@@ -417,7 +487,7 @@ impl TermsEnumIndex {
     }
 }
 
-impl Debug for TermsEnumIndex {
+impl Debug for TermsEnumIndex<'_> {
     /// **Deliberate divergence**: Java's `toString()` forwards to the wrapped
     /// `TermsEnum`. [`TermsEnum`] carries no `Debug` bound in this crate, so
     /// the wrapper reports its own identifying state instead.
@@ -600,13 +670,17 @@ mod tests {
         BytesRef::new(bytes.to_vec())
     }
 
-    fn index_over(terms: Vec<&[u8]>, sub_index: usize) -> TermsEnumIndex {
+    fn index_over(terms: Vec<&[u8]>, sub_index: usize) -> TermsEnumIndex<'static> {
         TermsEnumIndex::new(VecTermsEnum::boxed(terms), sub_index)
     }
 
     /// Positions a wrapper on `term` by scanning forward, so tests can build a
     /// wrapper in a known state without depending on seek.
-    fn positioned_on(terms: Vec<&[u8]>, sub_index: usize, target: &[u8]) -> TermsEnumIndex {
+    fn positioned_on(
+        terms: Vec<&[u8]>,
+        sub_index: usize,
+        target: &[u8],
+    ) -> TermsEnumIndex<'static> {
         let mut tei = index_over(terms, sub_index);
         while let Some(current) = tei.next().unwrap() {
             if current.slice() == target {

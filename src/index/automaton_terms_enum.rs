@@ -157,10 +157,10 @@ impl AutomatonTermsEnum {
     /// Returns `LuceneErrorKind::IllegalArgument` if the compiled automaton is not a
     /// normal automaton (e.g. `NONE`, `ALL`, or `SINGLE`).
     #[allow(clippy::new_ret_no_self)]
-    pub fn new(
-        tenum: Box<dyn TermsEnum>,
+    pub fn new<'a>(
+        tenum: Box<dyn TermsEnum + 'a>,
         compiled: CompiledAutomaton,
-    ) -> Result<Box<dyn TermsEnum>> {
+    ) -> Result<Box<dyn TermsEnum + 'a>> {
         Self::with_start_term(tenum, compiled, None)
     }
 
@@ -177,11 +177,11 @@ impl AutomatonTermsEnum {
     /// # Errors
     ///
     /// As [`Self::new`].
-    pub(crate) fn with_start_term(
-        tenum: Box<dyn TermsEnum>,
+    pub(crate) fn with_start_term<'a>(
+        tenum: Box<dyn TermsEnum + 'a>,
         compiled: CompiledAutomaton,
         start_term: Option<BytesRef>,
-    ) -> Result<Box<dyn TermsEnum>> {
+    ) -> Result<Box<dyn TermsEnum + 'a>> {
         if compiled.automaton_type != AutomatonType::Normal {
             return Err(LuceneError::illegal_argument(
                 "AutomatonTermsEnum only supports CompiledAutomaton::Normal; use CompiledAutomaton::get_terms_enum for special cases".to_string(),

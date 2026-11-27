@@ -299,8 +299,8 @@ impl BooleanQuery {
     pub fn is_two_clause_pure_disjunction_with_terms(&self) -> bool {
         self.clauses.len() == 2
             && self.is_pure_disjunction()
-            && self.clauses[0].query().as_any().is::<TermQuery>()
-            && self.clauses[1].query().as_any().is::<TermQuery>()
+            && self.clauses[0].query().as_term_query().is_some()
+            && self.clauses[1].query().as_term_query().is_some()
     }
 
     /// Rewrites a two-clause disjunction of term queries into the two term
@@ -329,8 +329,7 @@ impl BooleanQuery {
         for clause in &self.clauses {
             let term_query = clause
                 .query()
-                .as_any()
-                .downcast_ref::<TermQuery>()
+                .as_term_query()
                 .expect("INVARIANT: the caller checked every clause is a TermQuery");
             // The optimisation counts each term query several times, so a
             // cached `TermStates` avoids repeating the terms-dictionary lookup.
@@ -578,6 +577,19 @@ impl Query for BooleanQuery {
             searcher,
             score_mode,
             boost,
+        )?))
+    }
+
+    /// The weight keeps the shared query itself, as Java's `BooleanWeight`
+    /// references `BooleanQuery.this`.
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(BooleanWeight::from_shared(
+            self, searcher, score_mode, boost,
         )?))
     }
 

@@ -18,12 +18,13 @@
 //! `java.text.BreakIterator`, the boundary analysis
 //! `SegmentingTokenizerBase` and `ThaiTokenizer` segment their text with.
 //!
-//! JDK 25 answers `BreakIterator.getWordInstance(Locale)` and
-//! `getSentenceInstance(Locale)` with the iterators of
+//! JDK 25 answers `BreakIterator.getWordInstance(Locale)`,
+//! `getLineInstance(Locale)` and `getSentenceInstance(Locale)` with the iterators of
 //! `sun.util.locale.provider.BreakIteratorProviderImpl`: a
-//! `sun.text.RuleBasedBreakIterator` over the compiled word or sentence rules
-//! of `sun.text.resources.BreakIteratorRules`, and, for a Thai locale, a
-//! `sun.text.DictionaryBasedBreakIterator` over the Thai word rules and the
+//! `sun.text.RuleBasedBreakIterator` over the compiled word, line or sentence
+//! rules of `sun.text.resources.BreakIteratorRules`, and, for a Thai locale
+//! (word and line), a `sun.text.DictionaryBasedBreakIterator` over the Thai
+//! word or line rules and the
 //! `thai_dict` dictionary (`sun.text.resources.ext.BreakIteratorInfo_th`).
 //! This module emulates those iterators, written from the JDK 25 sources read
 //! as specification: [`RuleBasedBreakIterator`] runs the JDK's
@@ -45,7 +46,8 @@ use rucene::error::{LuceneError, Result};
 
 use super::break_dictionary::BreakDictionary;
 use super::break_iterator_rules::{
-    sentence_rules, thai_word_rules, word_rules, RuleTable, IGNORE, START_STATE, STOP_STATE,
+    line_rules, sentence_rules, thai_line_rules, thai_word_rules, word_rules, RuleTable, IGNORE,
+    START_STATE, STOP_STATE,
 };
 use super::character_iterator::{CharacterIterator, StringCharacterIterator, DONE as CHAR_DONE};
 use super::locale::Locale;
@@ -177,6 +179,25 @@ pub fn get_icu_thai_word_instance() -> Box<dyn BreakIterator> {
 /// (Thai's names the root sentence rules too).
 pub fn get_sentence_instance(_locale: &Locale) -> Box<dyn BreakIterator> {
     Box::new(RuleBasedBreakIterator::new(sentence_rules()))
+}
+
+/// Returns a new break iterator for line breaks (the positions where text
+/// may be wrapped) in `locale`.
+///
+/// Equivalent to `BreakIterator.getLineInstance(Locale)` on JDK 25: for a
+/// locale whose language is Thai (`th`), a dictionary-based iterator over the
+/// Thai line rules and the Thai dictionary (`LineDictionary` of
+/// `BreakIteratorInfo_th` names `thai_dict` too); for any other, a
+/// rule-based iterator over the line rules of the root locale.
+pub fn get_line_instance(locale: &Locale) -> Box<dyn BreakIterator> {
+    if locale.get_language() == "th" {
+        Box::new(RuleBasedBreakIterator::with_dictionary(
+            thai_line_rules(),
+            BreakDictionary::thai(),
+        ))
+    } else {
+        Box::new(RuleBasedBreakIterator::new(line_rules()))
+    }
 }
 
 /// What `DictionaryBasedBreakIterator` adds to `RuleBasedBreakIterator`.

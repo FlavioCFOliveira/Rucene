@@ -172,6 +172,16 @@ impl fmt::Display for CharSequence {
     }
 }
 
+impl rucene::util::attribute::AttributeValue for CharSequence {
+    /// `String.valueOf(charSequence)`, that is `toString()`.
+    fn append_value_of(&self, out: &mut String) {
+        match self {
+            CharSequence::String(s) => out.push_str(s),
+            CharSequence::Object(o) => out.push_str(&o.to_java_string()),
+        }
+    }
+}
+
 impl fmt::Debug for CharSequence {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

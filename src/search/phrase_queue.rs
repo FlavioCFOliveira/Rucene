@@ -5,6 +5,9 @@
 
 use crate::search::phrase_positions::PhrasePositions;
 
+/// The value of an unoccupied heap slot: Java's `null`.
+const EMPTY: usize = usize::MAX;
+
 /// A priority queue over the [`PhrasePositions`] of a sloppy phrase match.
 ///
 /// Equivalent to the `final org.apache.lucene.search.PhraseQueue`, which
@@ -21,7 +24,13 @@ use crate::search::phrase_positions::PhrasePositions;
 /// index 0.
 #[derive(Debug)]
 pub struct PhraseQueue {
-    heap: Vec<Option<usize>>,
+    /// Slots `1..=size` hold the ordinals of the queued phrase positions;
+    /// the other slots hold [`EMPTY`], Java's `null`.
+    ///
+    /// PERF: plain ordinals rather than `Option<usize>`, so moving an
+    /// element is one word store and no `take()`; the slot values and the
+    /// heap order are the same as with `Option`.
+    heap: Vec<usize>,
     size: usize,
 }
 
@@ -32,7 +41,7 @@ impl PhraseQueue {
     pub fn new(size: usize) -> Self {
         let heap_size = if size == 0 { 2 } else { size + 1 };
         Self {
-            heap: (0..heap_size).map(|_| None).collect(),
+            heap: vec![EMPTY; heap_size],
             size: 0,
         }
     }
@@ -41,6 +50,7 @@ impl PhraseQueue {
     ///
     /// Equivalent to the `final PhraseQueue.lessThan(PhrasePositions,
     /// PhrasePositions)`.
+    #[inline]
     pub fn less_than(pps: &[PhrasePositions], a: usize, b: usize) -> bool {
         let (pp1, pp2) = (&pps[a], &pps[b]);
         if pp1.position == pp2.position {
@@ -59,8 +69,9 @@ impl PhraseQueue {
     /// Returns the least element without removing it.
     ///
     /// Equivalent to `PriorityQueue.top()`.
+    #[inline]
     pub fn top(&self) -> Option<usize> {
-        self.heap[1]
+        Some(self.heap[1]).filter(|&top| top != EMPTY)
     }
 
     /// Returns the number of elements currently stored.
@@ -74,9 +85,7 @@ impl PhraseQueue {
     ///
     /// Equivalent to `PriorityQueue.clear()`.
     pub fn clear(&mut self) {
-        for slot in self.heap.iter_mut() {
-            *slot = None;
-        }
+        self.heap.fill(EMPTY);
         self.size = 0;
     }
 
@@ -88,9 +97,10 @@ impl PhraseQueue {
     ///
     /// Panics when the queue is already full, which is the
     /// `IndexOutOfBoundsException` Java raises.
+    #[inline]
     pub fn add(&mut self, pps: &[PhrasePositions], element: usize) {
         let index = self.size + 1;
-        self.heap[index] = Some(element);
+        self.heap[index] = element;
         self.size = index;
         self.up_heap(pps, index);
     }
@@ -98,19 +108,22 @@ impl PhraseQueue {
     /// Removes and returns the least element in `O(log size)` time.
     ///
     /// Equivalent to `PriorityQueue.pop()`.
+    #[inline]
     pub fn pop(&mut self, pps: &[PhrasePositions]) -> Option<usize> {
         if self.size == 0 {
             return None;
         }
-        let result = self.heap[1].take();
+        let result = self.heap[1];
         if self.size > 1 {
-            self.heap[1] = self.heap[self.size].take();
+            self.heap[1] = self.heap[self.size];
+            self.heap[self.size] = EMPTY;
             self.size -= 1;
             self.down_heap(pps, 1);
         } else {
+            self.heap[1] = EMPTY;
             self.size = 0;
         }
-        result
+        Some(result)
     }
 
     /// Re-establishes the heap after the top element has been mutated in place.
@@ -118,60 +131,42 @@ impl PhraseQueue {
     /// Equivalent to `PriorityQueue.updateTop()`.
     pub fn update_top(&mut self, pps: &[PhrasePositions]) -> Option<usize> {
         self.down_heap(pps, 1);
-        self.heap[1]
+        self.top()
     }
 
+    /// Equivalent to `PriorityQueue.upHeap(int)`.
     fn up_heap(&mut self, pps: &[PhrasePositions], orig_pos: usize) {
         let mut i = orig_pos;
-        let node = self.heap[i]
-            .take()
-            .expect("INVARIANT: up_heap starts from an occupied slot");
+        let node = self.heap[i];
+        debug_assert!(node != EMPTY, "up_heap starts from an occupied slot");
         let mut j = i >> 1;
-        while j > 0
-            && Self::less_than(
-                pps,
-                node,
-                self.heap[j].expect("INVARIANT: slots 1..=size are occupied"),
-            )
-        {
-            self.heap[i] = self.heap[j].take();
+        while j > 0 && Self::less_than(pps, node, self.heap[j]) {
+            self.heap[i] = self.heap[j];
             i = j;
             j >>= 1;
         }
-        self.heap[i] = Some(node);
+        self.heap[i] = node;
     }
 
+    /// Equivalent to `PriorityQueue.downHeap(int)`.
     fn down_heap(&mut self, pps: &[PhrasePositions], mut i: usize) {
-        let node = self.heap[i]
-            .take()
-            .expect("INVARIANT: down_heap starts from an occupied slot");
-        let occupied = "INVARIANT: slots 1..=size are occupied";
+        let node = self.heap[i];
+        debug_assert!(node != EMPTY, "down_heap starts from an occupied slot");
+        let size = self.size;
         let mut j = i << 1;
         let mut k = j + 1;
-        if k <= self.size
-            && Self::less_than(
-                pps,
-                self.heap[k].expect(occupied),
-                self.heap[j].expect(occupied),
-            )
-        {
+        if k <= size && Self::less_than(pps, self.heap[k], self.heap[j]) {
             j = k;
         }
-        while j <= self.size && Self::less_than(pps, self.heap[j].expect(occupied), node) {
-            self.heap[i] = self.heap[j].take();
+        while j <= size && Self::less_than(pps, self.heap[j], node) {
+            self.heap[i] = self.heap[j];
             i = j;
             j = i << 1;
             k = j + 1;
-            if k <= self.size
-                && Self::less_than(
-                    pps,
-                    self.heap[k].expect(occupied),
-                    self.heap[j].expect(occupied),
-                )
-            {
+            if k <= size && Self::less_than(pps, self.heap[k], self.heap[j]) {
                 j = k;
             }
         }
-        self.heap[i] = Some(node);
+        self.heap[i] = node;
     }
 }

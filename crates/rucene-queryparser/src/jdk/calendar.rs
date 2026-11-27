@@ -36,8 +36,11 @@
 //!   year cache), which change no result;
 //! * the system property `jdk.calendar.japanese.supplemental.era`: the eras
 //!   are the five of JDK 25 (Meiji to Reiwa);
-//! * `getActualMaximum`, except the month length `add` and `pinDayOfMonth`
-//!   need, and the week-year computation of `getWeekYear` for the years up to
+//! * `getActualMaximum` of `WEEK_OF_YEAR`, `WEEK_OF_MONTH` and
+//!   `DAY_OF_WEEK_IN_MONTH`, and `getActualMinimum`/`getActualMaximum` of a
+//!   Buddhist or Japanese calendar, which
+//!   [`Calendar::get_actual_maximum`] and [`Calendar::get_actual_minimum`]
+//!   report as an `UnsupportedOperationException`; and the week-year computation of `getWeekYear` for the years up to
 //!   one after the Gregorian cutover year (its "slow path"), which
 //!   [`Calendar::get_week_year`] reports as an `UnsupportedOperationException`;
 //! * `getMaximum` of a `GregorianCalendar` whose cutover year is not after
@@ -1122,8 +1125,13 @@ impl Calendar {
         Ok(cal)
     }
 
-    /// `GregorianCalendar.setGregorianChange(long)`.
-    fn set_gregorian_change(&mut self, cutover_time: i64) {
+    /// Sets the `GregorianCalendar` change date, as the millisecond instant
+    /// of the cutover (`Long.MIN_VALUE` for a pure Gregorian calendar,
+    /// `Long.MAX_VALUE` for a pure Julian one).
+    ///
+    /// Equivalent to `GregorianCalendar.setGregorianChange(Date)` with
+    /// `new Date(cutoverTime)`.
+    pub fn set_gregorian_change(&mut self, cutover_time: i64) {
         self.gregorian_cutover = cutover_time;
         self.gregorian_cutover_date = floor_divide_l(cutover_time, ONE_DAY) + EPOCH_OFFSET;
         if cutover_time == i64::MAX {
@@ -1136,6 +1144,13 @@ impl Calendar {
         if self.time < self.gregorian_cutover {
             self.set_unnormalized();
         }
+    }
+
+    /// The `GregorianCalendar` change date, as a millisecond instant.
+    ///
+    /// Equivalent to `GregorianCalendar.getGregorianChange().getTime()`.
+    pub fn get_gregorian_change(&self) -> i64 {
+        self.gregorian_cutover
     }
 
     /// `getCalendarType()`.
@@ -1451,8 +1466,8 @@ impl Calendar {
 
     fn get_set_state_fields(&self) -> i32 {
         let mut mask = 0;
-        for i in 0..FIELD_COUNT {
-            if self.stamp[i] != UNSET {
+        for (i, &stamp) in self.stamp[..FIELD_COUNT].iter().enumerate() {
+            if stamp != UNSET {
                 mask |= 1 << i;
             }
         }
@@ -1654,6 +1669,232 @@ impl Calendar {
             }
             _ => GREGORIAN_LEAST_MAX_VALUES[field],
         }
+    }
+
+    /// `GregorianCalendar.getActualMinimum(int field)`: the minimum value
+    /// `field` could have, given the time value of this calendar.
+    ///
+    /// # Errors
+    ///
+    /// `UnsupportedOperationException` for a Buddhist or Japanese calendar
+    /// (not emulated), and the errors of completing the fields.
+    pub fn get_actual_minimum(&self, field: usize) -> Result<i32> {
+        if self.kind != CalendarKind::Gregorian {
+            return Err(LuceneError::unsupported_operation(
+                "getActualMinimum of a non-Gregorian calendar",
+            ));
+        }
+        if field == DAY_OF_MONTH {
+            let gc = self.normalized_calendar()?;
+            let year = gc.cdate.year;
+            if year == self.gregorian_cutover_year || year == self.gregorian_cutover_year_julian {
+                let month1 = self.fixed_date_month1(&gc.cdate, gc.current_fixed_date());
+                let d = self.calendar_date(month1);
+                return Ok(d.day_of_month);
+            }
+        }
+        Ok(self.get_minimum(field))
+    }
+
+    /// `GregorianCalendar.isCutoverYear(int normalizedYear)`.
+    fn is_cutover_year(&self, normalized_year: i32) -> bool {
+        let year = if self.calsys_julian == Some(true) {
+            self.gregorian_cutover_year_julian
+        } else {
+            self.gregorian_cutover_year
+        };
+        normalized_year == year
+    }
+
+    /// `GregorianCalendar.getYearOffsetInMillis()`.
+    fn year_offset_in_millis(&self) -> i64 {
+        let mut t = i64::from(self.internal_get(DAY_OF_YEAR) - 1) * 24;
+        t += i64::from(self.internal_get(HOUR_OF_DAY));
+        t *= 60;
+        t += i64::from(self.internal_get(MINUTE));
+        t *= 60;
+        t += i64::from(self.internal_get(SECOND));
+        t *= 1000;
+        t + i64::from(self.internal_get(MILLISECOND))
+            - i64::from(self.internal_get(ZONE_OFFSET) + self.internal_get(DST_OFFSET))
+    }
+
+    /// `GregorianCalendar.getActualMaximum(int field)`: the maximum value
+    /// `field` could have, given the time value of this calendar.
+    ///
+    /// # Errors
+    ///
+    /// `UnsupportedOperationException` for `WEEK_OF_YEAR`, `WEEK_OF_MONTH`
+    /// and `DAY_OF_WEEK_IN_MONTH` and for a Buddhist or Japanese calendar
+    /// (not emulated); Java's `ArrayIndexOutOfBoundsException` for an
+    /// unknown field; and the errors of completing the fields.
+    pub fn get_actual_maximum(&self, field: usize) -> Result<i32> {
+        if self.kind != CalendarKind::Gregorian {
+            return Err(LuceneError::unsupported_operation(
+                "getActualMaximum of a non-Gregorian calendar",
+            ));
+        }
+        let fields_for_fixed_max = ERA_MASK
+            | DAY_OF_WEEK_MASK
+            | HOUR_MASK
+            | AM_PM_MASK
+            | HOUR_OF_DAY_MASK
+            | MINUTE_MASK
+            | SECOND_MASK
+            | MILLISECOND_MASK
+            | ZONE_OFFSET_MASK
+            | DST_OFFSET_MASK;
+        if field < FIELD_COUNT && (fields_for_fixed_max & mask(field)) != 0 {
+            return Ok(self.get_maximum(field));
+        }
+
+        let mut gc = self.normalized_calendar()?;
+        let date = gc.cdate;
+        let julian = gc.calsys_julian == Some(true);
+        let cal_fixed_date = |y: i32, m: i32, d: i32| -> i64 {
+            if julian {
+                julian_fixed_date(y, m, d)
+            } else {
+                gregorian_fixed_date(y, m, d)
+            }
+        };
+        let cal_date_from_fixed = |fd: i64| -> BaseDate {
+            if julian {
+                julian_date_from_fixed(fd)
+            } else {
+                gregorian_date_from_fixed(fd)
+            }
+        };
+        let cal_month_length = |d: &BaseDate| -> i32 {
+            if julian {
+                let mut days = DAYS_IN_MONTH[d.month as usize];
+                if d.month == 2 && is_julian_leap_year(d.year) {
+                    days += 1;
+                }
+                days
+            } else {
+                gregorian_month_length(d.year, d.month)
+            }
+        };
+        let mut normalized_year = date.year;
+
+        let value = match field {
+            MONTH => {
+                if !gc.is_cutover_year(normalized_year) {
+                    DECEMBER
+                } else {
+                    // January 1 of the next year may or may not exist.
+                    let mut next_jan1;
+                    loop {
+                        normalized_year += 1;
+                        next_jan1 = gregorian_fixed_date(normalized_year, 1, 1);
+                        if next_jan1 >= self.gregorian_cutover_date {
+                            break;
+                        }
+                    }
+                    let d = cal_date_from_fixed(next_jan1 - 1);
+                    d.month - 1
+                }
+            }
+            DAY_OF_MONTH => {
+                let mut value = cal_month_length(&date);
+                if gc.is_cutover_year(normalized_year) && date.day_of_month != value {
+                    // Handle cutover year.
+                    let fd = gc.current_fixed_date();
+                    if fd < self.gregorian_cutover_date {
+                        let month_length = gc.actual_month_length();
+                        let month_end =
+                            gc.fixed_date_month1(&gc.cdate, fd) + i64::from(month_length) - 1;
+                        // Convert the fixed date to its calendar date.
+                        let d = gc.calendar_date(month_end);
+                        value = d.day_of_month;
+                    }
+                }
+                value
+            }
+            DAY_OF_YEAR => {
+                if !gc.is_cutover_year(normalized_year) {
+                    let leap = if julian {
+                        is_julian_leap_year(date.year)
+                    } else {
+                        is_gregorian_leap_year(date.year)
+                    };
+                    if leap {
+                        366
+                    } else {
+                        365
+                    }
+                } else {
+                    // Handle cutover year.
+                    let jan1 = if self.gregorian_cutover_year == self.gregorian_cutover_year_julian
+                    {
+                        if gc.cutover_calendar_is_julian() {
+                            julian_fixed_date(normalized_year, 1, 1)
+                        } else {
+                            gregorian_fixed_date(normalized_year, 1, 1)
+                        }
+                    } else if normalized_year == self.gregorian_cutover_year_julian {
+                        cal_fixed_date(normalized_year, 1, 1)
+                    } else {
+                        self.gregorian_cutover_date
+                    };
+                    // January 1 of the next year may or may not exist.
+                    let mut next_jan1 = gregorian_fixed_date(normalized_year + 1, 1, 1);
+                    if next_jan1 < self.gregorian_cutover_date {
+                        next_jan1 = self.gregorian_cutover_date;
+                    }
+                    (next_jan1 - jan1) as i32
+                }
+            }
+            YEAR => {
+                // Calculate the millisecond offset from the beginning of
+                // the year of this calendar and adjust the max year value
+                // if we are beyond the limit in the max year.
+                let current = gc.year_offset_in_millis();
+
+                if gc.internal_get_era() == AD {
+                    gc.set_time_in_millis(i64::MAX);
+                    let mut value = gc.get(YEAR)?;
+                    let max_end = gc.year_offset_in_millis();
+                    if current > max_end {
+                        value -= 1;
+                    }
+                    value
+                } else {
+                    // The minimum instant, in the calendar system of the
+                    // era (Julian before the cutover).
+                    let mut d = gc.clone();
+                    d.set_time_in_millis(i64::MIN);
+                    d.complete()?;
+                    let mut max_end = i64::from(d.internal_get(DAY_OF_YEAR) - 1) * 24
+                        + i64::from(d.internal_get(HOUR_OF_DAY));
+                    max_end *= 60;
+                    max_end += i64::from(d.internal_get(MINUTE));
+                    max_end *= 60;
+                    max_end += i64::from(d.internal_get(SECOND));
+                    max_end *= 1000;
+                    max_end += i64::from(d.internal_get(MILLISECOND));
+                    let mut value = d.internal_get(YEAR);
+                    if current < max_end {
+                        value -= 1;
+                    }
+                    value
+                }
+            }
+            WEEK_OF_YEAR | WEEK_OF_MONTH | DAY_OF_WEEK_IN_MONTH => {
+                return Err(LuceneError::unsupported_operation(format!(
+                    "getActualMaximum({})",
+                    FIELD_NAME[field]
+                )));
+            }
+            _ => {
+                return Err(LuceneError::unchecked(
+                    "java.lang.ArrayIndexOutOfBoundsException",
+                    format!("Array index out of range: {field}"),
+                ));
+            }
+        };
+        Ok(value)
     }
 
     // ---------------------------------------------------- Gregorian helpers

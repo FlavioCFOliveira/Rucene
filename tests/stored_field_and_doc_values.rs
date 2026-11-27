@@ -217,18 +217,15 @@ fn lucene_reads_rucene_stored_fields_combined_with_every_doc_values_type() {
 /// `error` stands for.
 fn java_exception(error: &LuceneError) -> String {
     let message = match error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => message.clone(),
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { message, .. },
-            ..
-        } => message.clone().unwrap_or_else(|| "null".to_string()),
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
+        __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+            message.clone()
+        }
+        __lerr if let LuceneErrorKind::Unchecked { message, .. } = &__lerr.kind => {
+            message.clone().unwrap_or_else(|| "null".to_string())
+        }
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())

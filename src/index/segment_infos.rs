@@ -303,16 +303,18 @@ impl SegmentInfos {
         match crate::codecs::lookup(&name) {
             Ok(codec) => Ok(codec),
             // Maybe it is an old default codec that has moved.
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) if name.starts_with("Lucene") => Err(LuceneError::index_format_too_old_reason(
-                input.resource_description(),
-                format!(
-                    "Could not load codec '{name}'. {message}. Did you forget to add \
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind
+                    && (name.starts_with("Lucene")) =>
+            {
+                Err(LuceneError::index_format_too_old_reason(
+                    input.resource_description(),
+                    format!(
+                        "Could not load codec '{name}'. {message}. Did you forget to add \
                          lucene-backward-codecs.jar?"
-                ),
-            )),
+                    ),
+                ))
+            }
             // `throw e;` (`SegmentInfos.java:539`): any other name rethrows
             // `Codec.forName`'s own `IllegalArgumentException`.
             Err(error) => Err(error),
@@ -549,7 +551,9 @@ impl SegmentInfos {
             }
         }
         for info in &self.segments {
-            files.extend(info.files_ordered()?);
+            // PERF: the names keep the hashes their set computed, as Java's
+            // `files.addAll(info.files())` reads each `String`'s cached hash.
+            files.extend_from_set(info.files_ordered()?);
         }
         Ok(files)
     }
@@ -1608,13 +1612,7 @@ mod tests {
             Err(LuceneError::illegal_state("boom"))
         });
         assert!(
-            matches!(
-                result,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                })
-            ),
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { .. })),
             "{result:?}"
         );
         assert_eq!(calls, 1);
@@ -1634,10 +1632,9 @@ mod tests {
                       lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}";
         let message =
             |dir: &Arc<dyn Directory>| match SegmentInfos::read_latest_commit(Arc::clone(dir)) {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IndexNotFound(message),
-                    ..
-                }) => message,
+                Err(ref __lerr) if let LuceneErrorKind::IndexNotFound(message) = &__lerr.kind => {
+                    message.clone()
+                }
                 other => panic!("expected IndexNotFoundException, got {:?}", other.err()),
             };
         let empty = message(&dir);
@@ -1895,7 +1892,7 @@ mod tests {
         } else {
             let error = total.unwrap().unwrap_err();
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                 "{error:?}"
             );
         }
@@ -2040,13 +2037,7 @@ mod tests {
         let error = SegmentInfos::read_commit_with_min_version(Arc::clone(&dir), "segments_1", 11)
             .unwrap_err();
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "{error:?}"
         );
         assert_eq!(
@@ -2065,13 +2056,7 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "{error:?}"
         );
         assert_eq!(
@@ -2102,13 +2087,7 @@ mod tests {
         bytes[3] ^= 1;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "{error:?}"
         );
         assert_eq!(
@@ -2127,13 +2106,7 @@ mod tests {
         bytes[16] = 8;
         let (error, resource) = read_as_written(&dir, bytes);
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "the header's refusal, not the footer's checksum failure: {error:?}"
         );
         assert_eq!(
@@ -2169,13 +2142,7 @@ mod tests {
         bytes[at[0]..at[0] + 9].copy_from_slice(b"Lucene000");
         let (error, resource) = read_patched(&dir, bytes);
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IndexFormatTooOld { .. }),
             "{error:?}"
         );
         let message = error.to_string();

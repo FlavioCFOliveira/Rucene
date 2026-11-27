@@ -528,10 +528,9 @@ mod tests {
     fn empty_points_reader_rejects_every_field() {
         let reader = EmptyPointsReader;
         match reader.get_values("field") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "field=\"field\" was not indexed with points");
             }
             Err(other) => panic!("expected IllegalArgument, got {other:?}"),
@@ -547,13 +546,9 @@ mod tests {
         let mut writer = EmptyPointsWriter;
         let reader = EmptyPointsReader;
         let field = FieldInfo::default();
-        assert!(matches!(
-            writer.write_field(&field, &reader),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(writer.write_field(&field, &reader), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         writer.finish().unwrap();
         writer.close().unwrap();
     }
@@ -578,13 +573,9 @@ mod tests {
             context,
         );
         // `PointsFormat.EMPTY` has no writer (`codecs/PointsFormat.java:49-52`).
-        assert!(matches!(
-            format.fields_writer(&write_state),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(format.fields_writer(&write_state), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
 
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
         let _reader = format.fields_reader(&read_state).unwrap();

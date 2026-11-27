@@ -80,13 +80,7 @@ mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn is_already_closed(t: &(dyn Error + 'static)) -> bool {
-        matches!(
-            t.downcast_ref::<LuceneError>(),
-            Some(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            })
-        )
+        matches!(t.downcast_ref::<LuceneError>(), Some(__lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }))
     }
 
     /// An OK exception anywhere in the cause chain is suppressed.

@@ -287,11 +287,8 @@ fn default_provider_matches_jdk25() {
         Ok(list(&v))
     });
     row(r, &ds, "IOUtils.fsync missing", || {
-        IOUtils::fsync(&nope, false).map_err(|e| match e {
-            rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::Io(io),
-                ..
-            } => io,
+        IOUtils::fsync(&nope, false).map_err(|e| match e.into_kind() {
+            rucene::error::LuceneErrorKind::Io(io) => io,
             other => io::Error::other(other.to_string()),
         })?;
         Ok("-".into())

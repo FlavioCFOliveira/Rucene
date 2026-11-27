@@ -1703,13 +1703,7 @@ impl ConcurrentMergeScheduler {
 
         drop(merge_source);
         if let Err(exc) = result {
-            if matches!(
-                exc,
-                LuceneError {
-                    kind: LuceneErrorKind::MergeAborted(_),
-                    ..
-                }
-            ) {
+            if matches!(&exc.kind, LuceneErrorKind::MergeAborted(_)) {
                 // OK to ignore.
             } else if !self.shared.suppress_exceptions.load(Ordering::Acquire) {
                 // suppressExceptions is normally only set during testing.
@@ -1747,10 +1741,9 @@ impl ConcurrentMergeScheduler {
         let (mut state, outcome) =
             self.merge_locked(state, Arc::clone(merge_source), MergeTrigger::MergeFinished);
         let outcome = match outcome {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            }) => Ok(()),
+            Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }) => {
+                Ok(())
+            }
             other => other,
         };
         Self::remove_merge_thread_locked(&mut state);

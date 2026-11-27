@@ -473,7 +473,7 @@ impl MultiTerms {
     /// when no sub yields a term — `None` here.
     fn build_enum(
         sub_slices: &[ReaderSlice],
-        terms_enums: Vec<TermsEnumIndex>,
+        terms_enums: Vec<TermsEnumIndex<'static>>,
     ) -> Result<Option<MultiTermsEnum>> {
         if terms_enums.is_empty() {
             return Ok(None);
@@ -692,7 +692,7 @@ fn null_sub_terms_enum(method: &str, expression: &str) -> LuceneError {
 pub struct TermsEnumWithSlice {
     /// The `TermsEnumIndex` this class extends. Its enum is `None` — Java's
     /// `super(null, index)` — until [`MultiTermsEnum::reset`] hands it one.
-    base: TermsEnumIndex,
+    base: TermsEnumIndex<'static>,
     /// Java's `private final ReaderSlice subSlice`.
     sub_slice: ReaderSlice,
 }
@@ -709,7 +709,7 @@ impl TermsEnumWithSlice {
     }
 
     /// Returns the [`TermsEnumIndex`] this sub-enum extends in Java.
-    pub fn terms_enum_index(&self) -> &TermsEnumIndex {
+    pub fn terms_enum_index(&self) -> &TermsEnumIndex<'static> {
         &self.base
     }
 
@@ -993,7 +993,10 @@ impl MultiTermsEnum {
     /// [`LuceneErrorKind::IllegalArgument`](crate::error::LuceneErrorKind::IllegalArgument) — Java's
     /// `ArrayIndexOutOfBoundsException` — for a sub index this enum has no
     /// slice for.
-    pub fn reset(&mut self, terms_enums_index: Vec<TermsEnumIndex>) -> Result<Option<&mut Self>> {
+    pub fn reset(
+        &mut self,
+        terms_enums_index: Vec<TermsEnumIndex<'static>>,
+    ) -> Result<Option<&mut Self>> {
         debug_assert!(terms_enums_index.len() <= self.queue.subs().len());
         self.current_subs.clear();
         self.top.clear();
@@ -1289,37 +1292,40 @@ impl TermsEnum for MultiTermsEnum {
     ) -> Result<Option<Box<dyn PostingsEnum>>> {
         // Can only reuse if incoming enum is also a MultiDocsEnum ... and was
         // previously created w/ this MultiTermsEnum:
-        let mut docs_enum: Box<dyn PostingsEnum> = match reuse {
-            // `reuse != null && reuse instanceof MultiPostingsEnum`
-            Some(mut reuse) => match reuse
-                .as_any_mut()
-                .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-            {
-                // ... and was previously created w/ this MultiTermsEnum:
-                Some(docs_enum) if docs_enum.can_reuse(self) => reuse,
-                _ => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
-            },
-            None => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
+        // PERF: the reused enum is unboxed once, through the hidden
+        // `into_any` hook, instead of being downcast twice (rmp #679); an enum
+        // that cannot be reused is dropped, as Java drops its reference.
+        let mut multi: Box<MultiPostingsEnum> = match reuse
+            .and_then(|reuse| reuse.into_any())
+            .and_then(|any| any.downcast::<MultiPostingsEnum>().ok())
+        {
+            // ... and was previously created w/ this MultiTermsEnum:
+            Some(docs_enum) if docs_enum.can_reuse(self) => docs_enum,
+            _ => Box::new(MultiPostingsEnum::new(self, self.queue.subs().len())),
         };
-        let multi = docs_enum
-            .as_any_mut()
-            .and_then(|any| any.downcast_mut::<MultiPostingsEnum>())
-            .ok_or_else(|| {
-                LuceneError::illegal_state(
-                    "INVARIANT: the enum was just checked or built as a MultiPostingsEnum"
-                        .to_string(),
-                )
-            })?;
         // Rust-only: the live sub-enums go back to `subPostingsEnums`, which
         // in Java still holds them alongside the live slots
         // (`MultiPostingsEnum::release_live_subs`). PERF: drained in place, so
         // the live vectors keep their capacity from term to term, as Java's
         // `subDocs` and `subs` arrays are allocated once
         // (`MultiTermsEnum.java:69-72`, `MultiPostingsEnum.java:44-51`).
-        for (sub, sub_index) in multi.subs.drain(..).zip(multi.live_sub_indices.drain(..)) {
-            if let (Some(postings_enum), Some(sub_index)) = (sub.postings_enum, sub_index) {
-                if let Some(slot) = multi.sub_postings_enums.get_mut(sub_index) {
-                    *slot = Some(postings_enum);
+        // PERF (rmp #679): returned in place; the live slots are then refilled
+        // in place below, as Java refills its `subDocs` array, instead of a
+        // drain and a push per sub per term.
+        {
+            let MultiPostingsEnum {
+                subs,
+                live_sub_indices,
+                sub_postings_enums,
+                ..
+            } = &mut *multi;
+            for (sub, sub_index) in subs.iter_mut().zip(live_sub_indices.iter()) {
+                if let (Some(postings_enum), Some(sub_index)) =
+                    (sub.postings_enum.take(), *sub_index)
+                {
+                    if let Some(slot) = sub_postings_enums.get_mut(sub_index) {
+                        *slot = Some(postings_enum);
+                    }
                 }
             }
         }
@@ -1344,16 +1350,18 @@ impl TermsEnum for MultiTermsEnum {
                 .sub_postings_enums
                 .get_mut(sub_index)
                 .and_then(Option::take);
-            let sub_postings_enum = entry
-                .base
-                .terms_enum_mut()
-                .ok_or_else(|| {
-                    null_sub_terms_enum(
-                        "postings(org.apache.lucene.index.PostingsEnum, int)",
-                        "entry.termsEnum",
-                    )
-                })?
-                .postings(reuse_sub, flags)?;
+            if entry.base.terms_enum().is_none() {
+                return Err(null_sub_terms_enum(
+                    "postings(org.apache.lucene.index.PostingsEnum, int)",
+                    "entry.termsEnum",
+                ));
+            }
+            // PERF (rmp #679): static for a `SegmentTermsEnum` sub.
+            let sub_postings_enum = entry.base.postings(
+                reuse_sub,
+                flags,
+                "postings(org.apache.lucene.index.PostingsEnum, int)",
+            )?;
             debug_assert!(sub_postings_enum.is_some());
             let sub_postings_enum = sub_postings_enum.ok_or_else(LuceneError::null_pointer)?;
             // Java stores the enum both in `subPostingsEnums[subIndex]` and in
@@ -1361,11 +1369,21 @@ impl TermsEnum for MultiTermsEnum {
             // goes straight into the live slot, and back to
             // `subPostingsEnums` on the next reuse. Rust-only: the slot's
             // `live_sub_indices` entry records that `subPostingsEnums` index.
-            multi
-                .subs
-                .push(EnumWithSlice::new(sub_postings_enum, entry.sub_slice));
-            multi.live_sub_indices.push(Some(sub_index));
+            if let Some(live) = multi.subs.get_mut(i) {
+                live.postings_enum = Some(sub_postings_enum);
+                live.slice = entry.sub_slice;
+                multi.live_sub_indices[i] = Some(sub_index);
+            } else {
+                multi
+                    .subs
+                    .push(EnumWithSlice::new(sub_postings_enum, entry.sub_slice));
+                multi.live_sub_indices.push(Some(sub_index));
+            }
         }
+        // `numSubs = upto`: the live slots beyond this term's are dropped
+        // (their enums are already back in `sub_postings_enums`).
+        multi.subs.truncate(self.top.len());
+        multi.live_sub_indices.truncate(self.top.len());
 
         // The rest of `docsEnum.reset(subDocs, upto)`
         // (`MultiPostingsEnum.java:59-69`): `numSubs` is the live slots'
@@ -1373,7 +1391,7 @@ impl TermsEnum for MultiTermsEnum {
         multi.upto = -1;
         multi.doc = -1;
         multi.current = None;
-        Ok(Some(docs_enum))
+        Ok(Some(multi))
     }
 
     /// Equivalent to `MultiTermsEnum.impacts(int)`: implemented to not fail
@@ -1830,6 +1848,10 @@ impl PostingsEnum for MultiPostingsEnum {
     /// the cast `(MultiPostingsEnum) in.postings(...)`
     /// (`MappedMultiFields.java:129-131`).
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
         Some(self)
     }
 }

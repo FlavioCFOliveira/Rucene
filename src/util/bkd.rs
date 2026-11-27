@@ -6702,13 +6702,8 @@ mod tests {
             ArrayUtil::MAX_ARRAY_LENGTH
         );
         assert!(
-            matches!(
-                &error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ) && error.to_string().contains(&expected),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. })
+                && error.to_string().contains(&expected),
             "{error:?}"
         );
     }
@@ -6720,7 +6715,7 @@ mod tests {
     fn size_from_balanced_tree_refuses_an_extra_point_count_past_an_int() {
         let error = size_from_balanced_tree(4096, 4096, 1 << 12, 0, 1 << 20).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
         // A balanced tree whose excess fits: 4 leaves of up to 3 points, 10 points.
@@ -7116,10 +7111,9 @@ mod tests {
             assert!(out_of_range.is_err());
         }
         let prior = || LuceneError::illegal_state("prior".to_string());
-        assert!(matches!(
-            writer.verify_checksum(prior(), &mut offline),
-            LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m == "prior"
-        ));
+        assert!(
+            matches!(&(writer.verify_checksum(prior(), &mut offline)).kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m == "prior")
+        );
 
         // Flip one record byte behind the tracking wrapper's back.
         let length = raw.file_length(&name).unwrap() as usize;
@@ -7134,21 +7128,14 @@ mod tests {
         out.write_bytes(&bytes, 0, length).unwrap();
         out.close().unwrap();
 
-        assert!(matches!(
-            read_all(&mut offline, 0, 10),
-            Err(LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(read_all(&mut offline, 0, 10), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::CorruptIndex { .. }))
+        );
         read_all(&mut offline, 1, 9).expect("a slice is read without its checksum");
         match writer.verify_checksum(prior(), &mut offline) {
             // `CodecUtil.checkFooter(in, priorE)`: the corruption, its message
             // Lucene's; the prior exception is only suppressed into it.
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { message, .. },
-                ..
-            } => {
+            ref __lerr if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
                 assert!(message.starts_with("checksum failed"), "{message}");
                 assert!(!message.contains("prior"), "{message}");
             }

@@ -149,8 +149,8 @@ impl LongHeap {
 
     /// Pushes every element of `other` onto this heap.
     pub fn push_all(&mut self, other: &LongHeap) {
-        for i in 1..=other.size {
-            self.push(other.heap[i]);
+        for &value in &other.heap[1..=other.size] {
+            self.push(value);
         }
     }
 
@@ -327,8 +327,8 @@ impl TernaryLongHeap {
 
     /// Pushes every element of `other` onto this heap.
     pub fn push_all(&mut self, other: &TernaryLongHeap) {
-        for i in 1..=other.size {
-            self.push(other.heap[i]);
+        for &value in &other.heap[1..=other.size] {
+            self.push(value);
         }
     }
 

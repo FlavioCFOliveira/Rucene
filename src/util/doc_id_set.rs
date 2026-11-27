@@ -745,7 +745,7 @@ impl DocIdSetBuilder {
     /// # Errors
     ///
     /// Propagates the errors of the underlying set constructors.
-    pub fn build(self) -> Result<Box<dyn DocIdSet>> {
+    pub fn build(self) -> Result<Box<dyn DocIdSet + Send + Sync>> {
         if let Some(bit_set) = self.bit_set {
             debug_assert!(self.counter >= 0);
             let cost = (self.counter as f64 / self.num_values_per_doc).round() as i64;
@@ -846,15 +846,14 @@ impl BulkAdder<'_> {
 
     /// Adds every document in `docs`.
     pub fn add_ints(&mut self, docs: &IntsRef) {
-        for i in docs.offset..docs.offset + docs.length {
-            self.builder.adder_add(docs.ints[i]);
+        for &doc in &docs.ints[docs.offset..docs.offset + docs.length] {
+            self.builder.adder_add(doc);
         }
     }
 
     /// Adds every document in `docs` that is `>= doc_lower_bound_inclusive`.
     pub fn add_ints_from(&mut self, docs: &IntsRef, doc_lower_bound_inclusive: i32) {
-        for i in docs.offset..docs.offset + docs.length {
-            let doc = docs.ints[i];
+        for &doc in &docs.ints[docs.offset..docs.offset + docs.length] {
             if doc >= doc_lower_bound_inclusive {
                 self.builder.adder_add(doc);
             }

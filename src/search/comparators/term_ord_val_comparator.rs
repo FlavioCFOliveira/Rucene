@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::error::{LuceneError, Result};
 use crate::index::{
     DocValuesSkipIndexType, IndexOptions, LeafReader, LeafReaderContext, PostingsEnum,
-    SortedDocValues, POSTINGS_ENUM_NONE,
+    SortedDocValues, SortedDocValuesTermsEnum, TermsEnum, POSTINGS_ENUM_NONE,
 };
 use crate::search::abstract_doc_id_set_iterator::AbstractDocIdSetIterator;
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
@@ -245,6 +245,9 @@ enum CompetitiveStateKind {
         reader: Arc<dyn LeafReader>,
         field: String,
         dense: bool,
+        /// Java's `docValuesTerms`: a terms enum over the leaf's values
+        /// object, which the comparator keeps reading documents from.
+        doc_values_terms: Box<dyn TermsEnum>,
         disjunction: Option<Rc<RefCell<PostingsDisjunction>>>,
         docs_with_field_installed: bool,
     },
@@ -307,7 +310,10 @@ pub type SortedDocValuesSource =
 /// `TermOrdValComparator.TermOrdValLeafComparator`.
 pub struct TermOrdValLeafState {
     /// The current reader's doc ordinals and values.
-    terms_index: Box<dyn SortedDocValues>,
+    ///
+    /// Shared with the postings-based competitive state's `docValuesTerms`,
+    /// the `values.termsEnum()` Java hands it (`TermOrdValComparator.java:273`).
+    terms_index: Rc<RefCell<Box<dyn SortedDocValues>>>,
     /// Whether the current bottom slot matches the current reader.
     bottom_same_reader: bool,
     /// The bottom ordinal, cached for faster comparisons.
@@ -345,13 +351,6 @@ impl TermOrdValLeafState {
 /// [`LeafReader::get_sorted_doc_values`] —
 /// and does most comparisons using the ordinals. For medium to large results
 /// this comparator is much faster; for very small result sets it may be slower.
-///
-/// **Divergence from Lucene 10.5.0.** Java passes `values.termsEnum()` into the
-/// postings-based competitive state and uses it only to map the smallest
-/// competitive ordinal to its term. `SortedDocValuesTermsEnum.seekExact(long)`
-/// followed by `term()` is `lookupOrd(ord)` on the very same doc values, so
-/// this port calls that directly rather than aliasing the doc values into a
-/// second object.
 pub struct TermOrdValComparator {
     /// The ordinal of each slot.
     ords: Vec<i32>,
@@ -465,8 +464,8 @@ impl TermOrdValComparator {
     /// Equivalent to the private
     /// `TermOrdValLeafComparator.getOrdForDoc(int)`.
     fn get_ord_for_doc(leaf: &mut TermOrdValLeafState, doc: i32) -> Result<i32> {
-        if leaf.terms_index.advance_exact(doc)? {
-            leaf.terms_index.ord_value()
+        if leaf.terms_index.borrow_mut().advance_exact(doc)? {
+            leaf.terms_index.borrow().ord_value()
         } else {
             Ok(-1)
         }
@@ -496,7 +495,7 @@ impl TermOrdValComparator {
         }
 
         let (min_ord, max_ord) = {
-            let value_count = leaf.terms_index.get_value_count()?;
+            let value_count = leaf.terms_index.borrow().get_value_count()?;
             // This logic to figure out the minimum and maximum ordinals is
             // quite complex and verbose; it mirrors Lucene's exactly.
             let (min_ord, max_ord) = if !self.reverse {
@@ -572,7 +571,7 @@ impl TermOrdValComparator {
             return Ok(());
         }
         debug_assert!(min_ord >= 0);
-        debug_assert!(max_ord < leaf.terms_index.get_value_count()?);
+        debug_assert!(max_ord < leaf.terms_index.borrow().get_value_count()?);
         self.competitive_state_update(leaf, min_ord, max_ord)
     }
 
@@ -632,6 +631,7 @@ impl TermOrdValComparator {
                 reader,
                 field,
                 dense,
+                doc_values_terms,
                 disjunction,
                 docs_with_field_installed,
             } => {
@@ -652,7 +652,7 @@ impl TermOrdValComparator {
                     let built = init_postings(
                         reader.as_ref(),
                         field,
-                        leaf.terms_index.as_mut(),
+                        doc_values_terms.as_mut(),
                         min_ord,
                         max_ord,
                     )?;
@@ -702,6 +702,17 @@ impl TermOrdValComparator {
     }
 }
 
+/// `values.termsEnum()` over the leaf's values object, shared by handle: the
+/// implementation's own enum (Lucene90's `TermsDict`), or the default
+/// `SortedDocValuesTermsEnum` over the shared object.
+fn shared_terms_enum(values: &Rc<RefCell<Box<dyn SortedDocValues>>>) -> Result<Box<dyn TermsEnum>> {
+    let independent = values.borrow().independent_terms_enum()?;
+    Ok(match independent {
+        Some(terms_enum) => terms_enum,
+        None => SortedDocValuesTermsEnum::new(Rc::clone(values)),
+    })
+}
+
 /// Pulls the postings of every term whose ordinal lies in
 /// `[min_ord, max_ord]` and builds the priority queue over them.
 ///
@@ -709,14 +720,18 @@ impl TermOrdValComparator {
 fn init_postings(
     reader: &dyn LeafReader,
     field: &str,
-    terms_index: &mut dyn SortedDocValues,
+    doc_values_terms: &mut dyn TermsEnum,
     min_ord: i32,
     max_ord: i32,
 ) -> Result<PostingsDisjunction> {
     let size = (max_ord - min_ord + 1).max(0) as usize;
     let mut postings: VecDeque<Rc<RefCell<PostingsEnumAndOrd>>> = VecDeque::with_capacity(size);
     if size > 0 {
-        let min_term = terms_index.lookup_ord(min_ord)?;
+        // `docValuesTerms.seekExact(minOrd); BytesRef minTerm = docValuesTerms.term();`
+        doc_values_terms.seek_ord(i64::from(min_ord))?;
+        let min_term = doc_values_terms
+            .term()?
+            .ok_or_else(LuceneError::null_pointer)?;
         // `context.reader().terms(field).iterator()`
         // (`TermOrdValComparator.java:617`): a null `Terms` is dereferenced.
         let Some(terms) = reader.terms(field)? else {
@@ -744,9 +759,19 @@ fn init_postings(
                     "Terms have more than {ord} unique terms while doc values have exactly {ord} terms"
                 )));
             };
-            // `docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord`:
-            // the doc values hold `next` at exactly this ordinal.
-            debug_assert!(terms_index.lookup_term(next)? == ord);
+            // `next` is read only by the `assert` below, which is compiled
+            // only with debug assertions.
+            #[cfg(not(debug_assertions))]
+            let _ = &next;
+            // `assert docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord;`
+            #[cfg(debug_assertions)]
+            {
+                let next = next.clone();
+                debug_assert!(
+                    doc_values_terms.seek_exact(&next)?
+                        && doc_values_terms.ord()? == i64::from(ord)
+                );
+            }
             postings.push_back(Rc::new(RefCell::new(PostingsEnumAndOrd {
                 postings: terms_enum
                     .postings(None, POSTINGS_ENUM_NONE)?
@@ -813,7 +838,7 @@ impl SlotComparator for TermOrdValComparator {
         };
 
         let mut leaf = TermOrdValLeafState {
-            terms_index,
+            terms_index: Rc::new(RefCell::new(terms_index)),
             bottom_same_reader: false,
             bottom_ord: 0,
             top_same_reader,
@@ -837,7 +862,7 @@ impl SlotComparator for TermOrdValComparator {
             let field_infos = reader.get_field_infos();
             match field_infos.field_info(&self.field) {
                 None => {
-                    let value_count = leaf.terms_index.get_value_count()?;
+                    let value_count = leaf.terms_index.borrow().get_value_count()?;
                     if value_count != 0 {
                         return Err(LuceneError::illegal_state(format!(
                             "Field [{}] cannot be found in field infos",
@@ -873,6 +898,9 @@ impl SlotComparator for TermOrdValComparator {
                     reader: Arc::clone(&reader),
                     field: self.field.clone(),
                     dense,
+                    // `values.termsEnum()` (`TermOrdValComparator.java:273`),
+                    // over the leaf's own values object.
+                    doc_values_terms: shared_terms_enum(&leaf.terms_index)?,
                     disjunction: None,
                     docs_with_field_installed: false,
                 }
@@ -936,7 +964,7 @@ impl SlotComparator for TermOrdValComparator {
                 let value = bottom_value
                     .as_ref()
                     .expect("INVARIANT: the bottom value was just observed to be present");
-                let ord = leaf.terms_index.lookup_term(value)?;
+                let ord = leaf.terms_index.borrow_mut().lookup_term(value)?;
                 if ord < 0 {
                     leaf.bottom_ord = -ord - 2;
                     leaf.bottom_same_reader = false;
@@ -1018,7 +1046,9 @@ impl SlotComparator for TermOrdValComparator {
             None
         } else {
             debug_assert!(ord >= 0);
-            Some(BytesRef::deep_copy_of(leaf.terms_index.lookup_ord(ord)?))
+            Some(BytesRef::deep_copy_of(
+                leaf.terms_index.borrow_mut().lookup_ord(ord)?,
+            ))
         };
         self.values[slot as usize] = value;
         self.ords[slot as usize] = ord;
@@ -1048,5 +1078,134 @@ impl SlotComparator for TermOrdValComparator {
     fn set_hits_threshold_reached(&mut self, leaf: &mut TermOrdValLeafState) -> Result<()> {
         self.hits_threshold_reached = true;
         self.update_competitive_iterator(leaf)
+    }
+}
+
+#[cfg(test)]
+mod shared_values_tests {
+    use super::*;
+    use crate::codecs::{register_codec, Lucene104Codec};
+    use crate::document::{Document, SortedDocValuesField, Store, StringField};
+    use crate::index::directory_reader;
+    use crate::index::index_writer::IndexWriter;
+    use crate::index::index_writer_config::IndexWriterConfig;
+    use crate::store::{ByteBuffersDirectory, Directory};
+
+    /// Indexes `f` as a string field with sorted doc values over `values`,
+    /// plus `m`, a multi-valued sorted-set field.
+    fn index(values: &[&str]) -> Arc<dyn crate::index::directory_reader::DirectoryReader> {
+        let _ = register_codec("Lucene104", Lucene104Codec::new());
+        let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
+        let writer = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
+        for value in values {
+            let mut doc = Document::new();
+            doc.add(StringField::new("f", value.to_string(), Store::NO).unwrap());
+            doc.add(SortedDocValuesField::new(
+                "f",
+                BytesRef::new(value.as_bytes().to_vec()),
+            ));
+            writer.add_document(&doc).unwrap();
+        }
+        writer.commit().unwrap();
+        writer.close().unwrap();
+        directory_reader::open(dir).unwrap()
+    }
+
+    /// The `docValuesTerms` of the leaf's postings-based competitive state.
+    fn doc_values_terms(leaf: &TermOrdValLeafState) -> &dyn TermsEnum {
+        match leaf.competitive_state.as_ref().map(|state| &state.kind) {
+            Some(CompetitiveStateKind::Postings {
+                doc_values_terms, ..
+            }) => doc_values_terms.as_ref(),
+            _ => panic!("no postings-based competitive state"),
+        }
+    }
+
+    /// Regression for rmp #668: the postings-based competitive state reads
+    /// the terms through `values.termsEnum()` over the leaf's own values
+    /// object (`TermOrdValComparator.java:273`), which on Lucene90 values is
+    /// the codec's own `TermsDict` (`Lucene90DocValuesProducer.java:1525-1528`).
+    #[test]
+    fn the_postings_competitive_state_uses_the_values_terms_enum() {
+        let reader = index(&["c", "a", "b", "a"]);
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let mut comparator =
+            TermOrdValComparator::new(2, "f", false, false, Pruning::GREATER_THAN_OR_EQUAL_TO);
+        let leaf = comparator.new_leaf(&leaves[0]).unwrap();
+        assert!(
+            doc_values_terms(&leaf)
+                .to_string()
+                .contains("Lucene90DocValuesProducer$TermsDict@"),
+            "{}",
+            doc_values_terms(&leaf)
+        );
+        // `TermsDict` reads the field's entry, not the leaf's values object.
+        assert_eq!(Rc::strong_count(&leaf.terms_index), 1);
+        drop(leaf);
+        reader.close().unwrap();
+    }
+
+    /// Values whose `termsEnum()` is `SortedDocValues`' default, a
+    /// `SortedDocValuesTermsEnum` (here a wrapper that overrides nothing),
+    /// give the competitive state an enum over the leaf's own values object.
+    #[test]
+    fn a_default_terms_enum_shares_the_leaf_values() {
+        let reader = index(&["c", "a", "b", "a"]);
+        let leaves = Arc::clone(&reader).leaves().unwrap();
+        let mut comparator =
+            TermOrdValComparator::new(2, "f", false, false, Pruning::GREATER_THAN_OR_EQUAL_TO);
+        comparator.set_sorted_doc_values_source(Arc::new(
+            |reader: &dyn LeafReader, field: &str| {
+                Ok(
+                    Box::new(DefaultTermsEnumValues(crate::index::DocValues::get_sorted(
+                        reader, field,
+                    )?)) as Box<dyn SortedDocValues>,
+                )
+            },
+        ));
+        let leaf = comparator.new_leaf(&leaves[0]).unwrap();
+        assert!(doc_values_terms(&leaf)
+            .to_string()
+            .contains("org.apache.lucene.index.SortedDocValuesTermsEnum@"));
+        // The leaf and the competitive state's `docValuesTerms`.
+        assert_eq!(Rc::strong_count(&leaf.terms_index), 2);
+        drop(leaf);
+        reader.close().unwrap();
+    }
+
+    /// Sorted doc values that keep `SortedDocValues`' default `termsEnum()`.
+    struct DefaultTermsEnumValues(Box<dyn SortedDocValues>);
+
+    impl DocIdSetIterator for DefaultTermsEnumValues {
+        fn doc_id(&self) -> i32 {
+            self.0.doc_id()
+        }
+        fn next_doc(&mut self) -> Result<i32> {
+            self.0.next_doc()
+        }
+        fn advance(&mut self, target: i32) -> Result<i32> {
+            self.0.advance(target)
+        }
+        fn cost(&self) -> i64 {
+            self.0.cost()
+        }
+    }
+
+    impl crate::index::DocValuesIterator for DefaultTermsEnumValues {
+        fn advance_exact(&mut self, target: i32) -> Result<bool> {
+            self.0.advance_exact(target)
+        }
+    }
+
+    impl SortedDocValues for DefaultTermsEnumValues {
+        fn ord_value(&self) -> Result<i32> {
+            self.0.ord_value()
+        }
+        fn get_value_count(&self) -> Result<i32> {
+            self.0.get_value_count()
+        }
+        fn lookup_ord(&mut self, ord: i32) -> Result<&BytesRef> {
+            self.0.lookup_ord(ord)
+        }
     }
 }

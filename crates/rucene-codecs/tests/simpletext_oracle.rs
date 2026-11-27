@@ -700,17 +700,24 @@ fn corrupted_files_raise_lucenes_errors() {
             Ok(_) => ("none".to_string(), "-".to_string()),
             Err(e) => {
                 let class = match &e {
-                    rucene::error::LuceneError {
-                        kind: rucene::error::LuceneErrorKind::CorruptIndex { .. },
-                        ..
-                    } => "org.apache.lucene.index.CorruptIndexException".to_string(),
+                    __lerr
+                        if matches!(
+                            &__lerr.kind,
+                            rucene::error::LuceneErrorKind::CorruptIndex { .. }
+                        ) =>
+                    {
+                        "org.apache.lucene.index.CorruptIndexException".to_string()
+                    }
                     other => format!("rucene::{}", other.java_simple_name()),
                 };
                 let message = match &e {
-                    rucene::error::LuceneError {
-                        kind: rucene::error::LuceneErrorKind::CorruptIndex { message: m, .. },
-                        ..
-                    } => m.clone(),
+                    __lerr
+                        if let rucene::error::LuceneErrorKind::CorruptIndex {
+                            message: m, ..
+                        } = &__lerr.kind =>
+                    {
+                        m.clone()
+                    }
                     other => other.to_string(),
                 };
                 (

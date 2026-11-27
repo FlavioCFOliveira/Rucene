@@ -1,0 +1,26 @@
+[package]
+name = "rucene-facet"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.100"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/facet (taxonomy, sorted-set and range facets, facet sets)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_facet"
+
+[dependencies]
+rucene = { path = "../.." }
+
+[dev-dependencies]
+# The ported Lucene tests run on lucene/test-framework (and its randomized
+# testing base); the sprint-17 Java-oracle harness (`tests/sprint17_oracle/`,
+# rmp #628) draws on `randomizedtesting`.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
+# `FunctionQuery`/`LongFieldSource` in TestTaxonomyFacetValueSource: Java's facet
+# build.gradle declares `moduleTestImplementation project(':lucene:queries')`.
+rucene-queries = { path = "../rucene-queries" }

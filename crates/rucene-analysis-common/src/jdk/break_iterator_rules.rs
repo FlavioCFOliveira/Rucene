@@ -15,15 +15,16 @@
  * limitations under the License.
  */
 
-//! The state tables of JDK 25's rule-based break iterators: the word
-//! iterator of the root locale, the word iterator of Thai (before its
-//! dictionary splits Thai runs) and the sentence iterator, forward and
-//! backward.
+//! The state tables of JDK 25's rule-based break iterators: the word and
+//! line iterators of the root locale, the word and line iterators of Thai
+//! (before their dictionary splits Thai runs) and the sentence iterator,
+//! forward and backward.
 //!
 //! JDK 25 compiles, when the JDK is built, the rule sets of
 //! `sun.text.resources.BreakIteratorRules` (`WordBreakRules`,
-//! `SentenceBreakRules`) and `sun.text.resources.ext.BreakIteratorRules_th`
-//! (`WordBreakRules`) into state tables over character categories, which
+//! `LineBreakRules`, `SentenceBreakRules`) and
+//! `sun.text.resources.ext.BreakIteratorRules_th` (`WordBreakRules`,
+//! `LineBreakRules`) into state tables over character categories, which
 //! `sun.text.RuleBasedBreakIterator.handleNext` runs: from the current
 //! boundary it feeds code points to the table (an "ignore" character leaves
 //! the state as it is) until the table stops or the text ends, and the
@@ -34,7 +35,7 @@
 //! JDK 25 sources as specification; no JDK rule text and no compiled table is
 //! reproduced:
 //!
-//! * the two word rule sets (no `*?`) are written here as regular expressions
+//! * the two word and the two line rule sets (no `*?`) are written here as regular expressions
 //!   over the rules' character classes and compiled by subset construction,
 //!   the state flags ("end", "lookahead") being those of the NFA positions a
 //!   state holds, as the JDK's builder merges them;
@@ -291,6 +292,13 @@ fn categorize<K: Ord + Clone>(
 pub(crate) struct RuleTable {
     /// `(first code point, category)`, in order.
     ranges: Vec<(u32, i32)>,
+    /// The category of every BMP code point, the role of the JDK's
+    /// `charCategoryTable` (`RuleBasedBreakIterator.lookupCategory`: a
+    /// `CompactByteArray` read in constant time for `c < 0x10000`).
+    ///
+    /// PERF (rmp #680): built once from `ranges`, so a BMP lookup is one
+    /// load instead of a binary search over the ranges per character.
+    bmp: Box<[i16]>,
     /// The number of categories, the width of `state_table`.
     num_categories: usize,
     /// The next state by state and category; state 0 is `STOP_STATE`.
@@ -312,6 +320,24 @@ pub(crate) struct RuleTable {
     /// The category of a code point the rules do not mention (the JDK's
     /// category 0), which the supplementary table's default entries name.
     default_category: i32,
+}
+
+/// The category of each BMP code point (`0..0x10000`), from the category runs
+/// `ranges` (each run lasts until the next one starts).
+fn bmp_table(ranges: &[(u32, i32)]) -> Box<[i16]> {
+    let mut table = vec![0i16; 0x10000];
+    for (i, &(first, category)) in ranges.iter().enumerate() {
+        if first >= 0x10000 {
+            break;
+        }
+        let end = ranges
+            .get(i + 1)
+            .map_or(0x10000, |&(next, _)| next.min(0x10000));
+        let category = i16::try_from(category)
+            .expect("INVARIANT: a rule table has fewer than 2^15 categories");
+        table[first as usize..end as usize].fill(category);
+    }
+    table.into_boxed_slice()
 }
 
 /// The encoding of a category in [`supplementary_table`]: the JDK's value
@@ -426,7 +452,11 @@ impl RuleTable {
     ///
     /// A supplementary code point is looked up in the JDK's
     /// `SupplementaryCharacterData` table ([`supplementary_table`]).
+    #[inline]
     pub(crate) fn lookup_category(&self, c: i32) -> i32 {
+        if let Some(&category) = usize::try_from(c).ok().and_then(|c| self.bmp.get(c)) {
+            return i32::from(category);
+        }
         if (0x10000..=0x10FFFF).contains(&c) {
             return supplementary_category(&self.supplementary, c, self.default_category);
         }
@@ -685,6 +715,7 @@ fn compile(classes: &[Set], ignore: &Set, dictionary: Option<usize>, rules: &[Re
     RuleTable {
         supplementary,
         default_category,
+        bmp: bmp_table(&categories.ranges),
         ranges: categories.ranges,
         num_categories: categories.count,
         state_table,
@@ -1287,6 +1318,7 @@ pub(crate) fn sentence_rules() -> &'static RuleTable {
         RuleTable {
             supplementary,
             default_category,
+            bmp: bmp_table(&categories.ranges),
             ranges: categories.ranges,
             num_categories: categories.count,
             state_table,
@@ -1297,4 +1329,784 @@ pub(crate) fn sentence_rules() -> &'static RuleTable {
         }
     });
     &TABLE
+}
+
+/// A code point of each of the categories 1, 2, ... of JDK 25's root line
+/// table, in the JDK's numbering (see [`compile_jdk`]): read from
+/// `BreakIterator.getLineInstance(Locale.ROOT)` with
+/// `RuleBasedBreakIterator.lookupCategory`, the first code point of each.
+const LINE_CATEGORY_ORDER: [u32; 17] = [
+    0x0030, 0x0028, 0x0022, 0x000D, 0x002D, 0x002C, 0x0300, 0x0023, 0x3099, 0x0024, 0x0029, 0x0000,
+    0x00A0, 0x0003, 0x0021, 0x005B, 0x3042,
+];
+
+/// A code point of each of the categories 1, 2, ... of JDK 25's Thai line
+/// table, as [`LINE_CATEGORY_ORDER`] for
+/// `BreakIterator.getLineInstance(th)`.
+const THAI_LINE_CATEGORY_ORDER: [u32; 24] = [
+    0x0000, 0x3042, 0x00A0, 0x0E2F, 0x0022, 0xFEFF, 0x002C, 0x0030, 0x0072, 0x002D, 0x006B, 0x00AD,
+    0x000D, 0x0065, 0x0E01, 0x0E25, 0x0062, 0x0003, 0x0061, 0x0023, 0x0021, 0x0964, 0x0024, 0x3099,
+];
+
+/// The small Kana, CJK sound marks and other characters both line rule sets
+/// put in `<post-word>` besides general categories `Pe` and `Pf`: `"`, `!`,
+/// `%`, `.`, `,`, `:`, `;`, `?`, U+00A2, U+00B0, U+066A, U+2030-U+2034,
+/// U+2103, U+2105, U+2109, U+3001, U+3002, U+3005, the small Hiragana and
+/// Katakana, U+3099-U+309E, U+30FC-U+30FE, U+FF01, U+FF0E and U+FF1F.
+fn line_post_word_common() -> Set {
+    Set::Union(vec![
+        Set::Types(ty(PE) | ty(PF)),
+        Set::chars(&[
+            '"' as u32, '!' as u32, '%' as u32, '.' as u32, ',' as u32, ':' as u32, ';' as u32,
+            '?' as u32, 0x00A2, 0x00B0, 0x066A, 0x2103, 0x2105, 0x2109, 0x3001, 0x3002, 0x3005,
+            0x3041, 0x3043, 0x3045, 0x3047, 0x3049, 0x3063, 0x3083, 0x3085, 0x3087, 0x308E, 0x30A1,
+            0x30A3, 0x30A5, 0x30A7, 0x30A9, 0x30C3, 0x30E3, 0x30E5, 0x30E7, 0x30EE, 0x30F5, 0x30F6,
+            0xFF01, 0xFF0E, 0xFF1F,
+        ]),
+        Set::Range(0x2030, 0x2034),
+        Set::Range(0x3099, 0x309E),
+        Set::Range(0x30FC, 0x30FE),
+    ])
+}
+
+/// The line rules of the root locale (`LineBreakRules` of
+/// `sun.text.resources.BreakIteratorRules`), which
+/// `BreakIterator.getLineInstance` runs for every locale but Thai: a line
+/// may break between "words", a word being an optional run of prefix
+/// characters (currency signs but U+00A2, `Ps`, `Pi`, `"`, `'`), a core (a run of
+/// characters the rules do not otherwise mention, one CJK ideograph, Kana or
+/// Hangul syllable, or a number: prefixes and dashes, then digits with
+/// single `.` or `,` between them) and a suffix (a run of dashes or a run of
+/// `<post-word>` characters). Words joined by "glue" (U+00A0, U+0F0C,
+/// U+2007, U+2011, U+202F, U+FEFF, which spaces may surround) or by `$` or
+/// `'` stay together; a word keeps its trailing spaces, then enclosing
+/// marks, a `()` pair with `<post-word>` characters, enclosing marks, a CR
+/// and one hard break character (U+0003, tab, LF, FF, U+2028, U+2029); CR
+/// LF is one piece. Format characters and the control characters other
+/// than the hard breaks and CR are ignored where no class claims them (the
+/// controls being spaces, a space they are).
+pub(crate) fn line_rules() -> &'static RuleTable {
+    static TABLE: LazyLock<RuleTable> = LazyLock::new(|| {
+        let brk = Set::chars(&[0x0003, '\t' as u32, '\n' as u32, 0x000C, 0x2028, 0x2029]);
+        let cr = Set::ch('\r' as u32);
+        let ignore = Set::Union(vec![
+            Set::Types(ty(CF)),
+            Set::Types(ty(CC)).minus(Set::Union(vec![brk.clone(), cr.clone()])),
+        ]);
+        let danda = Set::chars(&[0x0964, 0x0965]);
+        let glue = Set::chars(&[0x00A0, 0x0F0C, 0x2007, 0x2011, 0x202F, 0xFEFF]);
+        let space = Set::Types(ty(ZS) | ty(CC)).minus(Set::Union(vec![
+            glue.clone(),
+            brk.clone(),
+            cr.clone(),
+        ]));
+        let dash = Set::Union(vec![Set::Types(ty(PD)), Set::ch(0x00AD)]).minus(glue.clone());
+        // `[:Sc::Ps::Pi:^[\u00a2]\"\']`: a `^` takes away the one item
+        // that follows it, the quotes are added
+        let pre_word = Set::Union(vec![
+            Set::Types(ty(SC) | ty(PS) | ty(PI)).minus(Set::ch(0x00A2)),
+            Set::chars(&['"' as u32, '\'' as u32]),
+        ]);
+        let post_word = Set::Union(vec![
+            line_post_word_common(),
+            Set::chars(&[0xFF05, 0xFF0C, 0xFF1A, 0xFF1B]),
+        ]);
+        let kanji = Set::Union(vec![
+            Set::Range(0x4E00, 0x9FA5),
+            Set::Range(0xAC00, 0xD7A3),
+            Set::Range(0xF900, 0xFA2D),
+            Set::Range(0xFA30, 0xFA6A),
+            Set::Range(0x3041, 0x3094),
+            Set::Range(0x30A1, 0x30FA),
+        ])
+        .minus(Set::Union(vec![post_word.clone(), ignore.clone()]));
+        let mid_num = Set::chars(&['.' as u32, ',' as u32]);
+        let char_ = Set::All.minus(Set::Union(vec![
+            brk.clone(),
+            space.clone(),
+            dash.clone(),
+            kanji.clone(),
+            glue.clone(),
+            ignore.clone(),
+            pre_word.clone(),
+            post_word.clone(),
+            mid_num.clone(),
+            cr.clone(),
+            danda.clone(),
+        ]));
+        let pre_word_dash = Set::Union(vec![pre_word.clone(), dash.clone()]);
+        let classes = [
+            brk,
+            Set::Types(ty(MN) | ty(ME)),
+            glue,
+            space,
+            dash,
+            pre_word,
+            post_word,
+            kanji,
+            Set::Types(ty(ND) | ty(NO)),
+            mid_num,
+            char_,
+            Set::ch('(' as u32),
+            Set::ch(')' as u32),
+            Set::chars(&['$' as u32, '\'' as u32]),
+            cr,
+            pre_word_dash,
+        ];
+        let names = [
+            "<break>",
+            "<enclosing>",
+            "<glue>",
+            "<space>",
+            "<dash>",
+            "<pre-word>",
+            "<post-word>",
+            "<kanji>",
+            "<digit>",
+            "<mid-num>",
+            "<char>",
+            "<hack1>",
+            "<hack2>",
+            "<hack3>",
+            "\r",
+            // `[<pre-word><dash>]`
+            "<pre-word-dash>",
+        ];
+        let macros = [
+            (
+                "<number>",
+                "(<pre-word-dash>*<digit><digit>*(<mid-num><digit><digit>*)*)",
+            ),
+            ("<word-core>", "(<char>*|<kanji>|<number>)"),
+            ("<word-suffix>", "((<dash><dash>*|<post-word>*))"),
+            ("<word>", "(<pre-word>*<word-core><word-suffix>)"),
+        ];
+        let rules = [
+            "<word>(((<space>*<glue><glue>*{<space>})|<hack3>)<word>)*<space>*{<enclosing>*}\
+             {<hack1><hack2><post-word>*}{<enclosing>*}{\r}{<break>}",
+            "\r<break>",
+        ];
+        compile_jdk(
+            &classes,
+            &names,
+            &ignore,
+            None,
+            &macros,
+            &rules,
+            &LINE_CATEGORY_ORDER,
+        )
+    });
+    &TABLE
+}
+
+/// The line rules of Thai (`LineBreakRules` of
+/// `sun.text.resources.ext.BreakIteratorRules_th`), run with the Thai
+/// dictionary: those of the root locale with the Thai `<dictionary>`
+/// characters as a word core (a run, which the dictionary then splits) and
+/// U+0E2F U+0E25 U+0E2F as another, U+0E46 (maiyamok) a `<post-word>`
+/// character, Mn, Me and Cf (but dictionary characters) ignored, no
+/// enclosing-mark, `()`, `$` or `'` handling, spaces part of the word
+/// suffix and words joined only by glue (`<nbsp>`); a line keeps a CR and a
+/// hard break, or U+0E2F, CR and, as the JDK's rule spells it, the optional
+/// letters `break`, or U+0E2F and a hard break; U+0E2F ending a line goes
+/// with it unless followed by U+0E25 U+0E2F (the break then goes before
+/// U+0E2F).
+pub(crate) fn thai_line_rules() -> &'static RuleTable {
+    static TABLE: LazyLock<RuleTable> = LazyLock::new(|| {
+        let dictionary = thai_dictionary_chars();
+        let ignore = Set::Types(ty(MN) | ty(ME) | ty(CF)).minus(dictionary.clone());
+        let danda = Set::chars(&[0x0964, 0x0965]);
+        let brk = Set::chars(&[0x0003, '\t' as u32, '\n' as u32, 0x000C, 0x2028, 0x2029]);
+        let cr = Set::ch('\r' as u32);
+        let nbsp = Set::chars(&[0x00A0, 0x0F0C, 0x2007, 0x2011, 0x202F, 0xFEFF]);
+        let space = Set::Types(ty(ZS) | ty(CC)).minus(Set::Union(vec![
+            nbsp.clone(),
+            brk.clone(),
+            cr.clone(),
+        ]));
+        let dash = Set::Union(vec![Set::Types(ty(PD)), Set::ch(0x00AD)]).minus(nbsp.clone());
+        let paiyannoi = Set::ch(0x0E2F);
+        let maiyamok = Set::ch(0x0E46);
+        // `[:Sc::Ps::Pi:^\u00a2\"]`: a `^` takes away the one item that
+        // follows it, `"` is added
+        let pre_word = Set::Union(vec![
+            Set::Types(ty(SC) | ty(PS) | ty(PI)).minus(Set::ch(0x00A2)),
+            Set::ch('"' as u32),
+        ]);
+        let post_word = Set::Union(vec![line_post_word_common(), maiyamok.clone()]);
+        let kanji = Set::Union(vec![
+            Set::Range(0x4E00, 0x9FA5),
+            Set::Range(0xF900, 0xFA2D),
+            Set::Range(0x3041, 0x3094),
+            Set::Range(0x30A1, 0x30FA),
+        ])
+        .minus(Set::Union(vec![post_word.clone(), ignore.clone()]));
+        let mid_num = Set::chars(&['.' as u32, ',' as u32]);
+        let char_ = Set::All.minus(Set::Union(vec![
+            brk.clone(),
+            space.clone(),
+            dash.clone(),
+            kanji.clone(),
+            nbsp.clone(),
+            ignore.clone(),
+            pre_word.clone(),
+            post_word.clone(),
+            mid_num.clone(),
+            cr.clone(),
+            danda.clone(),
+            dictionary.clone(),
+            paiyannoi.clone(),
+            maiyamok,
+        ]));
+        let pre_word_dash = Set::Union(vec![pre_word.clone(), dash.clone()]);
+        let classes = [
+            dictionary,
+            brk,
+            nbsp,
+            space,
+            dash,
+            paiyannoi,
+            pre_word,
+            post_word,
+            kanji,
+            Set::Types(ty(ND) | ty(NO)),
+            mid_num,
+            char_,
+            cr,
+            Set::ch(0x0E25),
+            Set::All.minus(Set::ch(0x0E25)).minus(ignore.clone()),
+            Set::All.minus(Set::ch(0x0E2F)).minus(ignore.clone()),
+            Set::ch('b' as u32),
+            Set::ch('r' as u32),
+            Set::ch('e' as u32),
+            Set::ch('a' as u32),
+            Set::ch('k' as u32),
+            pre_word_dash,
+        ];
+        let names = [
+            "<dictionary>",
+            "<break>",
+            "<nbsp>",
+            "<space>",
+            "<dash>",
+            "<paiyannoi>",
+            "<pre-word>",
+            "<post-word>",
+            "<kanji>",
+            "<digit>",
+            "<mid-num>",
+            "<char>",
+            "\r",
+            "\u{e25}",
+            // `[^[\u0e25<ignore>]]`
+            "<not-0e25>",
+            // `[^[<paiyannoi><ignore>]]`
+            "<not-paiyannoi>",
+            // the letters of the rule's literal `{break}`
+            "b",
+            "r",
+            "e",
+            "a",
+            "k",
+            // `[<pre-word><dash>]`
+            "<pre-word-dash>",
+        ];
+        let macros = [
+            ("<thai-etc>", "(<paiyannoi>\u{e25}<paiyannoi>)"),
+            (
+                "<number>",
+                "(<pre-word-dash>*<digit><digit>*(<mid-num><digit><digit>*)*)",
+            ),
+            (
+                "<word-core>",
+                "(<char>*|<kanji>|<number>|<dictionary><dictionary>*|<thai-etc>)",
+            ),
+            ("<word-suffix>", "((<dash><dash>*|<post-word>*)<space>*)"),
+            ("<word>", "(<pre-word>*<word-core><word-suffix>)"),
+        ];
+        let rules = [
+            "<word>(<nbsp><nbsp>*<word>)*{({\r}{<break>}|<paiyannoi>\r{break}|<paiyannoi><break>)}",
+            "<word>(<nbsp><nbsp>*<word>)*<paiyannoi>/(<not-0e25>|\u{e25}<not-paiyannoi>)",
+        ];
+        compile_jdk(
+            &classes,
+            &names,
+            &ignore,
+            Some(0),
+            &macros,
+            &rules,
+            &THAI_LINE_CATEGORY_ORDER,
+        )
+    });
+    &TABLE
+}
+
+/// A token of a rule as the JDK's builder reads it, after the variable
+/// substitutions: a character class (a `[]` expression or a literal
+/// character, by its index in the rule set's classes) or an operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tok {
+    Class(usize),
+    Open,
+    Bar,
+    Close,
+    Star,
+    LBrace,
+    RBrace,
+    Slash,
+}
+
+/// Tokenizes `rule` after expanding `macros` (`(name, text)`, in definition
+/// order: the JDK substitutes a definition into the text that follows it,
+/// so expanding the last first is the same): `<name>` and every other
+/// character but the operators `(`, `|`, `)`, `*`, `{`, `}` and `/` are
+/// classes, looked up in `classes` by name (a literal character by itself).
+fn tokenize(rule: &str, macros: &[(&str, &str)], classes: &[&str]) -> Vec<Tok> {
+    let mut text = rule.to_string();
+    for (name, body) in macros.iter().rev() {
+        text = text.replace(name, body);
+    }
+    let class = |name: &str| {
+        Tok::Class(
+            classes
+                .iter()
+                .position(|c| *c == name)
+                .unwrap_or_else(|| panic!("INVARIANT: class {name:?} is defined")),
+        )
+    };
+    let mut tokens = Vec::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        tokens.push(match c {
+            '(' => Tok::Open,
+            '|' => Tok::Bar,
+            ')' => Tok::Close,
+            '*' => Tok::Star,
+            '{' => Tok::LBrace,
+            '}' => Tok::RBrace,
+            '/' => Tok::Slash,
+            '<' => {
+                let mut name = String::from('<');
+                for d in chars.by_ref() {
+                    name.push(d);
+                    if d == '>' {
+                        break;
+                    }
+                }
+                class(&name)
+            }
+            other => class(&other.to_string()),
+        });
+    }
+    tokens
+}
+
+/// `RuleBasedBreakIteratorBuilder.END_STATE_FLAG`.
+const JDK_END_STATE_FLAG: u16 = 0x8000;
+/// `RuleBasedBreakIteratorBuilder.DONT_LOOP_FLAG`.
+const JDK_DONT_LOOP_FLAG: u16 = 0x4000;
+/// `RuleBasedBreakIteratorBuilder.LOOKAHEAD_STATE_FLAG`.
+const JDK_LOOKAHEAD_STATE_FLAG: u16 = 0x2000;
+/// `RuleBasedBreakIteratorBuilder.ALL_FLAGS`.
+const JDK_ALL_FLAGS: u16 = JDK_END_STATE_FLAG | JDK_DONT_LOOP_FLAG | JDK_LOOKAHEAD_STATE_FLAG;
+
+/// The rows a state-table update applies to: the decision point list
+/// itself (which the update may extend while it runs), or a list of its own.
+#[derive(Clone, Copy)]
+enum Rows<'a> {
+    DecisionPoints,
+    List(&'a [usize]),
+}
+
+/// The forward state-table construction of the JDK's
+/// `RuleBasedBreakIteratorBuilder` (`parseRule`, `updateStateTable`,
+/// `mergeStates`, `searchMergeList`), written from the JDK 25 build tool's
+/// source read as specification, for rules without `*?` and `.`.
+///
+/// The builder is not a regular-expression compiler: it lays each rule out
+/// as a line of states, makes the table deterministic as it goes by merging
+/// colliding states, and makes a `(...)*` group repeat by copying the
+/// transitions its entry states had when the `)` is read into its exit
+/// states. Where a group can be entered through an empty alternative the
+/// copied transitions miss what follows the empty path, so the line tables,
+/// whose `<word>` matches the empty string, differ from what their rules
+/// mean as regular expressions; this reproduces the JDK's tables.
+struct JdkTableBuilder {
+    /// `numCategories`.
+    n: usize,
+    /// `tempStateTable`: each row has `n` cells and a flag cell.
+    table: Vec<Vec<u16>>,
+    /// `decisionPointList`.
+    dpl: Vec<usize>,
+    /// `decisionPointStack`.
+    stack: Vec<Vec<usize>>,
+    /// `mergeList`: `(old row, new row, combined row)`.
+    merge_list: Vec<[usize; 3]>,
+}
+
+impl JdkTableBuilder {
+    fn new(n: usize) -> Self {
+        Self {
+            n,
+            // state 0 means "stop", state 1 starts
+            table: vec![vec![0; n + 1], vec![0; n + 1]],
+            dpl: Vec::new(),
+            stack: Vec::new(),
+            merge_list: Vec::new(),
+        }
+    }
+
+    /// `parseRule(rule, true)`; `categories[k]` are the categories of
+    /// class `k`.
+    fn parse_rule(&mut self, rule: &[Tok], categories: &[Vec<usize>]) {
+        let n = self.n;
+        let mut p = 0;
+        let mut current_state = 1;
+        let mut last_state = current_state;
+        let mut pending: &[usize] = &[];
+        self.stack = Vec::new();
+        self.dpl = vec![current_state];
+        let mut saw_early_break = false;
+        current_state = self.table.len() - 1;
+        let star_follows = |p: usize| rule.get(p + 1) == Some(&Tok::Star);
+        while p < rule.len() {
+            match rule[p] {
+                Tok::Class(k) => {
+                    pending = &categories[k];
+                    if !pending.is_empty() {
+                        if star_follows(p) {
+                            self.stack.push(self.dpl.clone());
+                        }
+                        let new_state = self.table.len();
+                        let mut state = vec![0; n + 1];
+                        if saw_early_break {
+                            state[n] = JDK_DONT_LOOP_FLAG;
+                        }
+                        self.table.push(state);
+                        self.update_state_table(Rows::DecisionPoints, pending, new_state);
+                        self.dpl.clear();
+                        last_state = current_state;
+                        loop {
+                            current_state += 1;
+                            self.dpl.push(current_state);
+                            if current_state + 1 >= self.table.len() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Tok::LBrace => self.stack.push(self.dpl.clone()),
+                tok @ (Tok::RBrace | Tok::Star) => {
+                    if tok == Tok::Star {
+                        let mut i = last_state + 1;
+                        while i < self.table.len() {
+                            self.update_state_table(Rows::List(&[i]), pending, last_state + 1);
+                            i += 1;
+                        }
+                    }
+                    let mut temp = self.stack.pop().expect("INVARIANT: balanced rule");
+                    temp.append(&mut self.dpl);
+                    self.dpl = temp;
+                }
+                Tok::Open => {
+                    self.table.push(vec![0; n + 1]);
+                    last_state = current_state;
+                    current_state += 1;
+                    self.dpl.insert(0, current_state);
+                    self.stack.push(self.dpl.clone());
+                    self.stack.push(Vec::new());
+                }
+                Tok::Bar => {
+                    let mut one_down = self.stack.pop().expect("INVARIANT: inside ()");
+                    let two_down = self.stack.last().expect("INVARIANT: inside ()").clone();
+                    one_down.extend_from_slice(&self.dpl);
+                    self.stack.push(one_down);
+                    self.dpl = two_down;
+                }
+                Tok::Close => {
+                    let mut exit_points = self.stack.pop().expect("INVARIANT: inside ()");
+                    exit_points.append(&mut self.dpl);
+                    self.dpl = exit_points;
+                    if !star_follows(p) {
+                        self.stack.pop();
+                    } else {
+                        let exit_points = self.dpl.clone();
+                        let mut temp = self.stack.pop().expect("INVARIANT: inside ()");
+                        let temp_state_num = temp[0];
+                        let temp_state = self.table[temp_state_num].clone();
+                        temp.extend_from_slice(&self.dpl);
+                        self.dpl = temp;
+                        for (i, &target) in temp_state.iter().enumerate() {
+                            if usize::from(target) > temp_state_num {
+                                self.update_state_table(
+                                    Rows::List(&exit_points),
+                                    &[i],
+                                    usize::from(target),
+                                );
+                            }
+                        }
+                        last_state = current_state;
+                        current_state = self.table.len() - 1;
+                        p += 1;
+                    }
+                }
+                Tok::Slash => {
+                    saw_early_break = true;
+                    for &row in &self.dpl {
+                        self.table[row][n] |= JDK_LOOKAHEAD_STATE_FLAG;
+                    }
+                }
+            }
+            p += 1;
+        }
+        let flags = JDK_END_STATE_FLAG
+            | if saw_early_break {
+                JDK_LOOKAHEAD_STATE_FLAG
+            } else {
+                0
+            };
+        for &row in &self.dpl {
+            self.table[row][n] |= flags;
+        }
+    }
+
+    /// `updateStateTable(rows, pendingChars, newValue)`.
+    fn update_state_table(&mut self, rows: Rows<'_>, pending: &[usize], new_value: usize) {
+        let mut new_values = vec![0u16; self.n + 1];
+        for &c in pending {
+            new_values[c] = new_value as u16;
+        }
+        match rows {
+            Rows::DecisionPoints => {
+                // the list grows as merged states join it
+                let mut i = 0;
+                while i < self.dpl.len() {
+                    let row = self.dpl[i];
+                    self.merge_states(row, &new_values, rows);
+                    i += 1;
+                }
+            }
+            Rows::List(list) => {
+                for &row in list {
+                    self.merge_states(row, &new_values, rows);
+                }
+            }
+        }
+    }
+
+    /// `mergeStates(rowNum, newValues, rowsBeingUpdated)` (no looping
+    /// states: the rules have no `*?`).
+    fn merge_states(&mut self, row_num: usize, new_values: &[u16], rows: Rows<'_>) {
+        let n = self.n;
+        for i in 0..=n {
+            let old = self.table[row_num][i];
+            let new = new_values[i];
+            if old == new {
+                continue;
+            } else if old == 0 {
+                self.table[row_num][i] = new;
+            } else if i == n {
+                self.table[row_num][i] = (new & JDK_ALL_FLAGS) | old;
+            } else if new != 0 {
+                let (old_row, new_row) = (usize::from(old), usize::from(new));
+                let combined = self.search_merge_list(old_row, new_row);
+                if combined != 0 {
+                    self.table[row_num][i] = combined as u16;
+                    continue;
+                }
+                let combined = self.table.len();
+                self.merge_list.push([old_row, new_row, combined]);
+                let copy = self.table[old_row].clone();
+                self.table.push(copy);
+                self.table[row_num][i] = combined as u16;
+                let has = |list: &[usize]| list.contains(&old_row) || list.contains(&new_row);
+                if has(&self.dpl) && !self.dpl.contains(&combined) {
+                    self.dpl.push(combined);
+                }
+                let (in_rows, combined_in_rows) = match rows {
+                    Rows::DecisionPoints => (has(&self.dpl), self.dpl.contains(&combined)),
+                    Rows::List(list) => (has(list), list.contains(&combined)),
+                };
+                if in_rows && !combined_in_rows {
+                    self.dpl.push(combined);
+                }
+                for dpl in &mut self.stack {
+                    if has(dpl) && !dpl.contains(&combined) {
+                        dpl.push(combined);
+                    }
+                }
+                let values = self.table[new_row].clone();
+                self.merge_states(combined, &values, rows);
+            }
+        }
+    }
+
+    /// `searchMergeList(a, b)`.
+    fn search_merge_list(&self, a: usize, b: usize) -> usize {
+        for &[x, y, combined] in &self.merge_list {
+            if (x == a && y == b) || (x == b && y == a) {
+                return combined;
+            }
+            if combined == a && (x == b || y == b) {
+                return combined;
+            }
+            if combined == b && (x == a || y == a) {
+                return combined;
+            }
+        }
+        0
+    }
+}
+
+/// Compiles a rule set as the JDK's builder does (see [`JdkTableBuilder`]):
+/// `classes` are its `[]` expressions and literal characters, `names` their
+/// names in `rules` (after `macros`), `ignore` and `dictionary` as for
+/// [`compile`], and `order` a code point of each of the JDK's categories 1,
+/// 2, ... in turn.
+///
+/// The JDK numbers its categories in the order its builder's `Hashtable`
+/// of rule expressions enumerates them, and the numbering shapes the table:
+/// `mergeStates` walks the columns in order, which numbers the merged
+/// states, and a repeating group only copies transitions to states numbered
+/// after its entry state. `order` was read from JDK 25's compiled tables
+/// (`RuleBasedBreakIterator.lookupCategory` of each code point; see
+/// [`line_rules`]). The table keeps the states reachable from the start state;
+/// the JDK's builder also merges equivalent states, which changes no
+/// boundary (nor the backward table, derived from which category pairs
+/// some state reads in sequence).
+fn compile_jdk(
+    classes: &[Set],
+    names: &[&str],
+    ignore: &Set,
+    dictionary: Option<usize>,
+    macros: &[(&str, &str)],
+    rules: &[&str],
+    order: &[u32],
+) -> RuleTable {
+    let mut points = BTreeSet::new();
+    for class in classes {
+        class.breakpoints(&mut points);
+    }
+    ignore.breakpoints(&mut points);
+    let (mut categories, mut masks) = categorize(&points, |c, t| {
+        let mask: u64 = classes
+            .iter()
+            .enumerate()
+            .filter(|(_, class)| class.contains(c, t))
+            .fold(0, |m, (i, _)| m | (1 << i));
+        if mask == 0 && ignore.contains(c, t) {
+            None
+        } else {
+            Some(mask)
+        }
+    });
+    if !masks.contains(&0) {
+        masks.push(0);
+        categories.count += 1;
+    }
+    let n = categories.count;
+    let class_categories: Vec<Vec<usize>> = (0..classes.len())
+        .map(|k| (0..n).filter(|&cat| masks[cat] & (1 << k) != 0).collect())
+        .collect();
+
+    // the JDK's numbering of the categories: its column 0 is the code points
+    // in no class, the others are named by their representatives
+    assert_eq!(
+        order.len() + 1,
+        n,
+        "INVARIANT: one representative per JDK category"
+    );
+    let mut perm = vec![usize::MAX; n];
+    perm[masks
+        .iter()
+        .position(|&m| m == 0)
+        .expect("INVARIANT: category 0 was added above")] = 0;
+    for (k, &rep) in order.iter().enumerate() {
+        let at = categories
+            .ranges
+            .partition_point(|&(first, _)| first <= rep)
+            - 1;
+        let category = categories.ranges[at].1;
+        assert!(
+            category >= 0 && perm[category as usize] == usize::MAX,
+            "INVARIANT: U+{rep:04X} names a category of its own"
+        );
+        perm[category as usize] = k + 1;
+    }
+    let class_categories: Vec<Vec<usize>> = class_categories
+        .iter()
+        .map(|cats| {
+            let mut jdk: Vec<usize> = cats.iter().map(|&c| perm[c]).collect();
+            jdk.sort_unstable();
+            jdk
+        })
+        .collect();
+    let mut builder = JdkTableBuilder::new(n);
+    for rule in rules {
+        let tokens = tokenize(rule, macros, names);
+        builder.parse_rule(&tokens, &class_categories);
+    }
+    // back to this module's numbering
+    for row in &mut builder.table {
+        let jdk = row.clone();
+        for (c, cell) in row[..n].iter_mut().enumerate() {
+            *cell = jdk[perm[c]];
+        }
+    }
+
+    // the states reachable from the start state, in their order
+    let table = builder.table;
+    let mut reachable = vec![false; table.len()];
+    reachable[STOP_STATE] = true;
+    reachable[START_STATE] = true;
+    let mut stack = vec![START_STATE];
+    while let Some(row) = stack.pop() {
+        for &target in &table[row][..n] {
+            let target = usize::from(target);
+            if target != 0 && !reachable[target] {
+                reachable[target] = true;
+                stack.push(target);
+            }
+        }
+    }
+    let mut number = vec![0usize; table.len()];
+    let mut count = 0;
+    for (row, &keep) in reachable.iter().enumerate() {
+        if keep {
+            number[row] = count;
+            count += 1;
+        }
+    }
+    let mut state_table = Vec::with_capacity(count * n);
+    let mut end_states = Vec::with_capacity(count);
+    let mut lookahead_states = Vec::with_capacity(count);
+    for (row, cells) in table.iter().enumerate() {
+        if !reachable[row] {
+            continue;
+        }
+        state_table.extend(cells[..n].iter().map(|&t| number[usize::from(t)] as u16));
+        end_states.push(cells[n] & JDK_END_STATE_FLAG != 0);
+        lookahead_states.push(cells[n] & JDK_LOOKAHEAD_STATE_FLAG != 0);
+    }
+    let backwards_state_table = pair_table(&state_table, n, None);
+    let default_category = masks
+        .iter()
+        .position(|&m| m == 0)
+        .expect("INVARIANT: category 0 was added above") as i32;
+    let supplementary = supplementary_table(&categories.ranges, default_category);
+    RuleTable {
+        supplementary,
+        default_category,
+        bmp: bmp_table(&categories.ranges),
+        ranges: categories.ranges,
+        num_categories: n,
+        state_table,
+        backwards_state_table,
+        end_states,
+        lookahead_states,
+        category_flags: match dictionary {
+            None => Vec::new(),
+            Some(d) => masks.iter().map(|m| m & (1 << d) != 0).collect(),
+        },
+    }
 }

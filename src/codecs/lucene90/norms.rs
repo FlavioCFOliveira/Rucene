@@ -45,13 +45,12 @@
 #![deny(unsafe_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::codecs::codec_util;
 use crate::codecs::lucene90::indexed_disi::{
-    create_block_slice, create_jump_table, write_bit_set, IndexedDISI, JumpTable,
+    block_segment_of, create_block_slice, create_jump_table, write_bit_set, IndexedDISI, JumpTable,
     DEFAULT_DENSE_RANK_POWER,
 };
 use crate::codecs::norms::{NormsConsumer, NormsFormat, NormsProducer};
@@ -60,8 +59,9 @@ use crate::codecs::stub::FieldInfo;
 use crate::error::{LuceneError, LuceneErrorKind, Result};
 use crate::index::doc_values::{DocValues, DocValuesIterator, NumericDocValues};
 use crate::index::index_file_names::{segment_file_name, NORMS_EXTENSION, NORMS_META_EXTENSION};
+use crate::internal::hppc::IntObjectHashMap;
 use crate::search::{DocIdSetIterator, NO_MORE_DOCS};
-use crate::store::{DataInput, IndexInput, IndexOutput, RandomAccessInput};
+use crate::store::{DataInput, IndexInput, IndexOutput, MemorySegment, RandomAccessInput};
 use crate::util::atomic_ref_cell::AtomicRefCell;
 use crate::util::IOUtils;
 
@@ -378,20 +378,25 @@ struct NormsEntry {
 ///
 /// Equivalent to `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer`.
 pub struct Lucene90NormsProducer {
-    norms: HashMap<i32, NormsEntry>,
+    /// `norms`, Java's `IntObjectHashMap<NormsEntry>`.
+    ///
+    /// PERF (rmp #679): the port's `IntObjectHashMap`, as Java declares it,
+    /// instead of a SipHash `HashMap`; a merge looks a field up once per
+    /// term (`PushPostingsWriterBase.writeTerm` -> `getNorms`).
+    norms: IntObjectHashMap<NormsEntry>,
     max_doc: i32,
     data: crate::store::SharedIndexInput,
     /// `merging`: set on the instance `getMergeInstance()` returns.
     merging: bool,
     /// `disiInputs`: the docs-with-field inputs a merge instance opened, by
     /// field number.
-    disi_inputs: Mutex<HashMap<i32, SharedIndexInput>>,
+    disi_inputs: Mutex<IntObjectHashMap<Arc<DisiBlockSlice>>>,
     /// `disiJumpTables`: the jump tables a merge instance opened, by field
     /// number, each with its resource description read once.
-    disi_jump_tables: Mutex<HashMap<i32, SharedRandomAccessInput>>,
+    disi_jump_tables: Mutex<IntObjectHashMap<SharedRandomAccessInput>>,
     /// `dataInputs`: the values slices a merge instance opened, by field
     /// number, each with its resource description read once.
-    data_inputs: Mutex<HashMap<i32, SharedRandomAccessSlice>>,
+    data_inputs: Mutex<IntObjectHashMap<SharedRandomAccessSlice>>,
 }
 
 /// An `IndexInput` several readers of a merge instance share: Java shares
@@ -406,6 +411,18 @@ pub struct Lucene90NormsProducer {
 /// blocking.
 type SharedIndexInput = Arc<AtomicRefCell<Box<dyn IndexInput>>>;
 
+/// `inF` of `Lucene90NormsProducer.getDisiInput`: the docs-with-field block
+/// slice a merge instance caches per field and shares between the wrappers
+/// ([`MergingDisiInput`]) it hands out, with its bytes in memory when it is
+/// memory-mapped in one segment ([`block_segment_of`]).
+struct DisiBlockSlice {
+    /// `inF`.
+    r#in: SharedIndexInput,
+    /// The bytes of `r#in`, positioned as its file pointer; read-only, so the
+    /// wrappers read them through `&self`.
+    segment: Option<MemorySegment>,
+}
+
 /// The positional counterpart of [`SharedIndexInput`], for the values slices
 /// and jump tables a merge instance caches.
 type SharedRandomAccessInput = Arc<AtomicRefCell<Box<dyn RandomAccessInput>>>;
@@ -413,7 +430,7 @@ type SharedRandomAccessInput = Arc<AtomicRefCell<Box<dyn RandomAccessInput>>>;
 impl fmt::Debug for Lucene90NormsProducer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Lucene90NormsProducer")
-            .field("fields", &self.norms.len())
+            .field("fields", &self.norms.size())
             .field("max_doc", &self.max_doc)
             .finish_non_exhaustive()
     }
@@ -429,7 +446,7 @@ impl Lucene90NormsProducer {
             NORMS_META_EXTENSION,
         );
         let mut meta = state.directory.open_checksum_input(&meta_name)?;
-        let mut norms = HashMap::new();
+        let mut norms = IntObjectHashMap::new();
         // Java puts **both** the header check and the entry parse inside one
         // `try`, and verifies the footer in the matching `finally` with
         // whatever they threw (`Lucene90NormsProducer.java:49-64`). Rust has no
@@ -500,9 +517,9 @@ impl Lucene90NormsProducer {
             max_doc,
             data: crate::store::SharedIndexInput::new(data),
             merging: false,
-            disi_inputs: Mutex::new(HashMap::new()),
-            disi_jump_tables: Mutex::new(HashMap::new()),
-            data_inputs: Mutex::new(HashMap::new()),
+            disi_inputs: Mutex::new(IntObjectHashMap::new()),
+            disi_jump_tables: Mutex::new(IntObjectHashMap::new()),
+            data_inputs: Mutex::new(IntObjectHashMap::new()),
         })
     }
 
@@ -515,9 +532,9 @@ impl Lucene90NormsProducer {
             max_doc: self.max_doc,
             data: crate::store::SharedIndexInput::new(self.data.clone_input()?),
             merging: true,
-            disi_inputs: Mutex::new(HashMap::new()),
-            disi_jump_tables: Mutex::new(HashMap::new()),
-            data_inputs: Mutex::new(HashMap::new()),
+            disi_inputs: Mutex::new(IntObjectHashMap::new()),
+            disi_jump_tables: Mutex::new(IntObjectHashMap::new()),
+            data_inputs: Mutex::new(IntObjectHashMap::new()),
         })
     }
 
@@ -531,7 +548,7 @@ impl Lucene90NormsProducer {
     fn get_data_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<NormsSlice> {
         let mut slice: Option<SharedRandomAccessSlice> = None;
         if self.merging {
-            slice = lock(&self.data_inputs).get(&field.number).cloned();
+            slice = lock(&self.data_inputs).get(field.number).cloned();
         }
         let slice = match slice {
             Some(slice) => slice,
@@ -546,7 +563,7 @@ impl Lucene90NormsProducer {
                     return Ok(NormsSlice::Owned(slice));
                 }
                 let slice = SharedRandomAccessSlice::new(Arc::new(AtomicRefCell::new(slice)));
-                lock(&self.data_inputs).insert(field.number, slice.clone());
+                lock(&self.data_inputs).put(field.number, slice.clone());
                 slice
             }
         };
@@ -582,29 +599,44 @@ impl Lucene90NormsProducer {
     ///
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene90.Lucene90NormsProducer#getDisiInput`.
-    fn get_disi_input(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<Box<dyn IndexInput>> {
+    ///
+    /// On a merge instance it also returns the in-memory bytes of the shared
+    /// slice, which the wrapper cannot hand out itself (see
+    /// [`IndexedDISI::set_block_segment`]).
+    fn get_disi_input(
+        &self,
+        field: &FieldInfo,
+        entry: &NormsEntry,
+    ) -> Result<(Box<dyn IndexInput>, Option<MemorySegment>)> {
         if !self.merging {
-            return create_block_slice(
-                &**self.data.read(),
-                "docs",
-                entry.docs_with_field_offset,
-                entry.docs_with_field_length,
-                entry.jump_table_entry_count as i32,
-            );
-        }
-
-        let mut disi_inputs = lock(&self.disi_inputs);
-        let r#in = match disi_inputs.get(&field.number) {
-            Some(r#in) => Arc::clone(r#in),
-            None => {
-                let r#in = Arc::new(AtomicRefCell::new(create_block_slice(
+            return Ok((
+                create_block_slice(
                     &**self.data.read(),
                     "docs",
                     entry.docs_with_field_offset,
                     entry.docs_with_field_length,
                     entry.jump_table_entry_count as i32,
-                )?));
-                disi_inputs.insert(field.number, Arc::clone(&r#in));
+                )?,
+                None,
+            ));
+        }
+
+        let mut disi_inputs = lock(&self.disi_inputs);
+        let r#in = match disi_inputs.get(field.number) {
+            Some(r#in) => Arc::clone(r#in),
+            None => {
+                let block_slice = create_block_slice(
+                    &**self.data.read(),
+                    "docs",
+                    entry.docs_with_field_offset,
+                    entry.docs_with_field_length,
+                    entry.jump_table_entry_count as i32,
+                )?;
+                let r#in = Arc::new(DisiBlockSlice {
+                    segment: block_segment_of(block_slice.as_ref()),
+                    r#in: Arc::new(AtomicRefCell::new(block_slice)),
+                });
+                disi_inputs.put(field.number, Arc::clone(&r#in));
                 r#in
             }
         };
@@ -613,7 +645,8 @@ impl Lucene90NormsProducer {
         // norms instances are pulled and consumed in parallel. Merging usually
         // doesn't need this feature but CheckIndex might, plus we need merge
         // instances to behave well and not be trappy.
-        Ok(Box::new(MergingDisiInput { r#in, offset: 0 }))
+        let segment = r#in.segment.clone();
+        Ok((Box::new(MergingDisiInput { r#in, offset: 0 }), segment))
     }
 
     /// Opens (or, on a merge instance, reuses) the jump table of one sparse
@@ -633,7 +666,7 @@ impl Lucene90NormsProducer {
     ) -> Result<Option<JumpTable>> {
         let mut jump_table: Option<SharedRandomAccessInput> = None;
         if self.merging {
-            jump_table = lock(&self.disi_jump_tables).get(&field.number).cloned();
+            jump_table = lock(&self.disi_jump_tables).get(field.number).cloned();
         }
         let jump_table = match jump_table {
             Some(jump_table) => jump_table,
@@ -651,7 +684,7 @@ impl Lucene90NormsProducer {
                     return Ok(Some(JumpTable::Owned(jump_table)));
                 }
                 let jump_table = Arc::new(AtomicRefCell::new(jump_table));
-                lock(&self.disi_jump_tables).insert(field.number, Arc::clone(&jump_table));
+                lock(&self.disi_jump_tables).put(field.number, Arc::clone(&jump_table));
                 jump_table
             }
         };
@@ -668,22 +701,26 @@ impl Lucene90NormsProducer {
     /// of the two slices [`get_disi_input`](Self::get_disi_input) and
     /// [`get_disi_jump_table`](Self::get_disi_jump_table) return.
     fn disi(&self, field: &FieldInfo, entry: &NormsEntry) -> Result<IndexedDISI> {
-        let disi_input = self.get_disi_input(field, entry)?;
+        let (disi_input, block_segment) = self.get_disi_input(field, entry)?;
         let disi_jump_table = self.get_disi_jump_table(field, entry)?;
-        IndexedDISI::with_jump_table(
+        let mut disi = IndexedDISI::with_jump_table(
             disi_input,
             disi_jump_table,
             entry.jump_table_entry_count as i32,
             entry.dense_rank_power,
             entry.num_docs_with_field as i64,
-        )
+        )?;
+        if block_segment.is_some() {
+            disi.set_block_segment(block_segment);
+        }
+        Ok(disi)
     }
 }
 
 fn read_fields(
     meta: &mut dyn IndexInput,
     infos: &crate::index::FieldInfos,
-    norms: &mut HashMap<i32, NormsEntry>,
+    norms: &mut IntObjectHashMap<NormsEntry>,
 ) -> Result<()> {
     loop {
         let field_number = meta.read_int()?;
@@ -726,7 +763,7 @@ fn read_fields(
             }
         }
         entry.norms_offset = meta.read_long()?;
-        norms.insert(info.number, entry);
+        norms.put(info.number, entry);
     }
     Ok(())
 }
@@ -734,7 +771,7 @@ fn read_fields(
 impl Lucene90NormsProducer {
     /// The body of `Lucene90NormsProducer.getNorms(FieldInfo)`.
     fn norms_of(&self, field: &FieldInfo) -> Result<Box<dyn NumericDocValues>> {
-        let entry = self.norms.get(&field.number).ok_or_else(|| {
+        let entry = self.norms.get(field.number).ok_or_else(|| {
             // `entry.docsWithFieldOffset` on the `null` that `norms.get`
             // returns: the JVM's `NullPointerException`.
             LuceneError::null_pointer_with_message(
@@ -818,14 +855,31 @@ fn lock<T>(cache: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 struct SharedRandomAccessSlice {
     input: SharedRandomAccessInput,
     resource_description: Arc<str>,
+    /// The bytes of the slice in memory, read once when it is opened
+    /// ([`values_segment_of`]).
+    ///
+    /// PERF (rmp #679): the norms iterators read their values from these
+    /// bytes, as they do from an owned slice's, instead of a `RefCell`
+    /// borrow and a dynamic `read_byte_at` per document during a merge.
+    segment: Option<MemorySegment>,
 }
 
 impl SharedRandomAccessSlice {
     fn new(input: SharedRandomAccessInput) -> Self {
-        let resource_description = Arc::from(input.borrow().resource_description());
+        let (resource_description, segment) = {
+            let slice = input.borrow();
+            let segment = slice.as_memory_segment_access_input().and_then(|access| {
+                access
+                    .segment_slice_or_null(0, slice.length())
+                    .ok()
+                    .flatten()
+            });
+            (Arc::from(slice.resource_description()), segment)
+        };
         Self {
             input,
             resource_description,
+            segment,
         }
     }
 }
@@ -922,10 +976,21 @@ impl RandomAccessInput for SharedRandomAccessSlice {
 /// (`Lucene90NormsProducer.java:290-355`): keeps its own offset over the
 /// shared docs-with-field input, seeking it before each read, and supports
 /// only what `IndexedDISI` uses.
+///
+/// **Internal deviation from Lucene 10.5.0, no observable difference.** Java
+/// reads `inF.seek(offset); inF.readShort()` (and `readLong`, `readBytes`),
+/// which the JIT inlines. Here every such read would borrow the shared cell
+/// (an atomic read-modify-write) and make two dynamic calls (rmp #675), so a
+/// read the shared slice's in-memory bytes can serve
+/// ([`DisiBlockSlice::segment`]) is taken from them at `offset` instead: the
+/// same bytes `inF` returns there. Only the shared slice's own file pointer
+/// is left where it was, and every reader of it seeks first, so nothing can
+/// observe it. Any read the bytes cannot serve (past the end, closed input)
+/// takes Java's path, with Java's errors.
 #[derive(Clone)]
 struct MergingDisiInput {
-    /// `inF`.
-    r#in: SharedIndexInput,
+    /// `inF`, with its bytes.
+    r#in: Arc<DisiBlockSlice>,
     offset: i64,
 }
 
@@ -946,16 +1011,37 @@ impl MergingDisiInput {
         // PERF: `r#in` and `offset` are disjoint fields, so the shared input is
         // borrowed through `self` directly; no reference-count round trip per
         // read, and no lock (see [`SharedIndexInput`]).
-        let mut r#in = self.r#in.borrow_mut();
+        let mut r#in = self.r#in.r#in.borrow_mut();
         r#in.seek(self.offset)?;
         self.offset += n;
         read(r#in.as_mut())
+    }
+
+    /// The shared slice's bytes when they can serve a read: mapped and the
+    /// arena still open.
+    #[inline]
+    fn segment(&self) -> Option<&MemorySegment> {
+        self.r#in
+            .segment
+            .as_ref()
+            .filter(|segment| segment.is_alive())
     }
 }
 
 impl DataInput for MergingDisiInput {
     fn read_bytes(&mut self, b: Option<&mut [u8]>, off: usize, len: usize) -> Result<()> {
-        self.read_at(len as i64, |r#in| r#in.read_bytes(b, off, len))
+        // PERF: the shared slice's bytes (see the type's docs).
+        let Some(b) = b else {
+            return self.read_at(len as i64, |r#in| r#in.read_bytes(None, off, len));
+        };
+        if let Some(dst) = off.checked_add(len).and_then(|end| b.get_mut(off..end)) {
+            let offset = self.offset;
+            if self.segment().is_some_and(|s| s.copy_to(offset, dst)) {
+                self.offset += len as i64;
+                return Ok(());
+            }
+        }
+        self.read_at(len as i64, |r#in| r#in.read_bytes(Some(b), off, len))
     }
 
     fn read_byte(&mut self) -> Result<u8> {
@@ -978,10 +1064,20 @@ impl DataInput for MergingDisiInput {
     }
 
     fn read_short(&mut self) -> Result<i16> {
+        // PERF: the shared slice's bytes (see the type's docs).
+        if let Some(value) = self.segment().and_then(|s| s.get_i16_le(self.offset)) {
+            self.offset += 2;
+            return Ok(value);
+        }
         self.read_at(2, |r#in| r#in.read_short())
     }
 
     fn read_long(&mut self) -> Result<i64> {
+        // PERF: the shared slice's bytes (see the type's docs).
+        if let Some(value) = self.segment().and_then(|s| s.get_i64_le(self.offset)) {
+            self.offset += 8;
+            return Ok(value);
+        }
         self.read_at(8, |r#in| r#in.read_long())
     }
 }
@@ -996,7 +1092,7 @@ impl IndexInput for MergingDisiInput {
     }
 
     fn length(&self) -> i64 {
-        self.r#in.borrow().length()
+        self.r#in.r#in.borrow().length()
     }
 
     fn seek(&mut self, pos: i64) -> Result<()> {
@@ -1075,6 +1171,52 @@ impl NormsSlice {
             Self::Shared(slice) => read_norm_at(slice, index, bytes_per_norm),
         }
     }
+}
+
+/// The in-memory bytes of an own values slice ([`NormsSlice::Owned`]) when it
+/// is a memory-mapped input whose whole range lies in one mapped segment;
+/// `None` otherwise (a merge instance's shared slice, another directory, a
+/// closed input).
+///
+/// Reached through Lucene's own `MemorySegmentAccessInput.segmentSliceOrNull`
+/// ([`IndexInput::as_memory_segment_access_input`]), as
+/// [`IndexedDISI`]'s block bytes are; see [`SparseNormsIterator`]'s `values`.
+fn values_segment_of(slice: &NormsSlice) -> Option<MemorySegment> {
+    match slice {
+        NormsSlice::Owned(slice) => slice
+            .as_memory_segment_access_input()?
+            .segment_slice_or_null(0, slice.length())
+            .ok()
+            .flatten(),
+        NormsSlice::Shared(slice) => slice.segment.clone(),
+    }
+}
+
+/// The packed norm of the value at ordinal `index` read from `bytes`, the
+/// bytes of the values slice, as [`read_norm_at`] reads it there
+/// (`RandomAccessInput.readByte/readShort/readInt/readLong`, little-endian),
+/// or `None` when the value is not all inside `bytes` or `bytes_per_norm` is
+/// not one of 1, 2, 4 and 8: the caller then reads through the slice, which
+/// fails as Java does.
+#[inline]
+fn norm_in_bytes(bytes: &[u8], index: i32, bytes_per_norm: i8) -> Option<i64> {
+    let index = usize::try_from(index).ok()?;
+    Some(match bytes_per_norm {
+        1 => *bytes.get(index)? as i8 as i64,
+        2 => {
+            let at = index.checked_mul(2)?;
+            i16::from_le_bytes(bytes.get(at..at.checked_add(2)?)?.try_into().ok()?) as i64
+        }
+        4 => {
+            let at = index.checked_mul(4)?;
+            i32::from_le_bytes(bytes.get(at..at.checked_add(4)?)?.try_into().ok()?) as i64
+        }
+        8 => {
+            let at = index.checked_mul(8)?;
+            i64::from_le_bytes(bytes.get(at..at.checked_add(8)?)?.try_into().ok()?)
+        }
+        _ => return None,
+    })
 }
 
 /// Dense iterator over norms where every document has the same singleton value.
@@ -1305,6 +1447,20 @@ impl NumericDocValues for SparseConstantNormsIterator {
 struct SparseNormsIterator {
     disi: IndexedDISI,
     slice: RefCell<NormsSlice>,
+    /// The bytes of `slice` in memory ([`values_segment_of`]).
+    ///
+    /// **Internal deviation from Lucene 10.5.0, no observable difference.**
+    /// Java's `longValue()` reads `slice.readByte(disi.index())` (or the
+    /// `readShort`/`readInt`/`readLong` of its `bytesPerNorm`;
+    /// `Lucene90NormsProducer.java:458-494`), which the JIT inlines into a
+    /// plain load. Here the read would take the `RefCell` borrow, the
+    /// [`NormsSlice`] match and a dynamic `read_byte_at` call per scored
+    /// document (7 % of search time, rmp #676). It therefore reads the value
+    /// straight from these bytes — the same bytes, at the same position, that
+    /// the slice returns. Any read the bytes cannot serve (a position outside
+    /// the slice, a closed input) goes through `slice`, which raises exactly
+    /// what Java raises; without bytes the read is Java's.
+    values: Option<MemorySegment>,
     bytes_per_norm: i8,
 }
 
@@ -1319,9 +1475,11 @@ impl fmt::Debug for SparseNormsIterator {
 
 impl SparseNormsIterator {
     fn new(disi: IndexedDISI, slice: NormsSlice, bytes_per_norm: i8) -> Self {
+        let values = values_segment_of(&slice);
         Self {
             disi,
             slice: RefCell::new(slice),
+            values,
             bytes_per_norm,
         }
     }
@@ -1366,7 +1524,85 @@ impl DocValuesIterator for SparseNormsIterator {
 }
 
 impl NumericDocValues for SparseNormsIterator {
+    /// The default `NumericDocValues.longValues` loop (`advanceExact`, then
+    /// `longValue` or the default, per doc; same bounds errors), with the
+    /// values' mapped bytes and liveness resolved once per call instead of
+    /// per document.
+    ///
+    /// PERF (rmp #680): the term scorer reads its norms in batches through
+    /// this; Java's JIT reduces the per-doc read to a load. A read the bytes
+    /// cannot serve goes through [`long_value`](Self::long_value), as before.
+    fn long_values(
+        &mut self,
+        size: i32,
+        docs: &[i32],
+        docs_offset: i32,
+        values: &mut [i64],
+        values_offset: i32,
+        default_value: i64,
+    ) -> Result<()> {
+        let aioobe = |index: i32, length: usize| {
+            LuceneError::unchecked(
+                "java.lang.ArrayIndexOutOfBoundsException",
+                format!("Index {index} out of bounds for length {length}"),
+            )
+        };
+        let segment = self.values.clone().filter(|s| s.is_alive());
+        let bytes: &[u8] = segment.as_ref().map_or(&[], |s| s.bytes());
+        let bytes_per_norm = self.bytes_per_norm;
+        // PERF: the docs both arrays hold for the whole batch are scored over
+        // zipped slices, with no per-doc index conversion or bound check; the
+        // first index out of either array then raises Java's
+        // `ArrayIndexOutOfBoundsException` exactly where the per-doc loop
+        // would, after the docs before it were written.
+        let in_range = |offset: i32, length: usize| -> usize {
+            usize::try_from(offset).map_or(0, |offset| length.saturating_sub(offset))
+        };
+        let count = usize::try_from(size).unwrap_or(0);
+        let whole = count
+            .min(in_range(docs_offset, docs.len()))
+            .min(in_range(values_offset, values.len()));
+        if whole > 0 {
+            let (d0, v0) = (docs_offset as usize, values_offset as usize);
+            for (&doc, value) in docs[d0..d0 + whole].iter().zip(&mut values[v0..v0 + whole]) {
+                *value = if self.disi.advance_exact(doc)? {
+                    match norm_in_bytes(bytes, self.disi.index(), bytes_per_norm) {
+                        Some(value) => value,
+                        None => self.long_value()?,
+                    }
+                } else {
+                    default_value
+                };
+            }
+        }
+        if whole < count {
+            // The per-doc loop's next step: the docs index is checked before
+            // the doc is read, the values index after its value is computed.
+            let di = docs_offset.wrapping_add(whole as i32);
+            let vi = values_offset.wrapping_add(whole as i32);
+            let doc = usize::try_from(di)
+                .ok()
+                .and_then(|i| docs.get(i).copied())
+                .ok_or_else(|| aioobe(di, docs.len()))?;
+            if self.disi.advance_exact(doc)?
+                && norm_in_bytes(bytes, self.disi.index(), bytes_per_norm).is_none()
+            {
+                self.long_value()?;
+            }
+            return Err(aioobe(vi, values.len()));
+        }
+        Ok(())
+    }
+
     fn long_value(&self) -> Result<i64> {
+        // PERF: see `values`.
+        if let Some(values) = self.values.as_ref().filter(|s| s.is_alive()) {
+            if let Some(value) =
+                norm_in_bytes(values.bytes(), self.disi.index(), self.bytes_per_norm)
+            {
+                return Ok(value);
+            }
+        }
         self.slice
             .borrow_mut()
             .read_norm_at(self.disi.index(), self.bytes_per_norm)
@@ -1838,13 +2074,7 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &empty_fis))
             .unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }));
     }
 
     #[test]
@@ -1871,13 +2101,7 @@ mod tests {
         let err = Lucene90NormsFormat::new()
             .norms_producer(&read_state(&dir, &info, &fis))
             .unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::CorruptIndex { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }));
     }
     // -----------------------------------------------------------------------
     // Regression tests
@@ -2160,8 +2384,8 @@ mod tests {
         assert!(merge.merging);
         let mut first = merge.get_norms(&body).unwrap().unwrap();
         let mut second = merge.get_norms(&body).unwrap().unwrap();
-        assert_eq!(lock(&merge.disi_inputs).len(), 1);
-        assert_eq!(lock(&merge.data_inputs).len(), 1);
+        assert_eq!(lock(&merge.disi_inputs).size(), 1);
+        assert_eq!(lock(&merge.data_inputs).size(), 1);
         // Interleaved: each iterator keeps its own position over the shared
         // inputs.
         assert_eq!(first.next_doc().unwrap(), 1);
@@ -2193,7 +2417,7 @@ mod tests {
         let info = test_segment_info("_0", max_doc);
         let fis = field_infos(vec![body.clone()]);
         let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
-        let entry = producer.norms[&body.number];
+        let entry = *producer.norms.get(body.number).unwrap();
         assert!(
             entry.jump_table_entry_count > 0,
             "a field with a jump table"
@@ -2214,7 +2438,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
             &first,
-            &lock(&merge.disi_jump_tables)[&body.number]
+            lock(&merge.disi_jump_tables).get(body.number).unwrap()
         ));
 
         let (target, value) = *values.last().unwrap();
@@ -2242,7 +2466,7 @@ mod tests {
         let info = test_segment_info("_0", 50);
         let fis = field_infos(vec![body.clone()]);
         let producer = Lucene90NormsProducer::new(&read_state(&dir, &info, &fis)).unwrap();
-        let entry = producer.norms[&body.number];
+        let entry = *producer.norms.get(body.number).unwrap();
         assert!(matches!(
             producer.get_data_input(&body, &entry).unwrap(),
             NormsSlice::Owned(_)
@@ -2258,7 +2482,7 @@ mod tests {
         assert!(Arc::ptr_eq(&first, &second));
         assert!(Arc::ptr_eq(
             &first,
-            &lock(&merge.data_inputs)[&body.number].input
+            &lock(&merge.data_inputs).get(body.number).unwrap().input
         ));
     }
 
@@ -2450,12 +2674,132 @@ mod tests {
             "the footer must not be blamed, got: {message}"
         );
     }
+
+    /// rmp #676: a sparse norms field read from a memory-mapped directory
+    /// (values from the mapped bytes, [`SparseNormsIterator`]'s `values`, and
+    /// the DISI's mapped scan) gives, for every byte width, the values the
+    /// same field gives from a heap directory, through `advance_exact` +
+    /// `long_value` and through the boxed bulk `long_values` the term scorer
+    /// calls.
+    #[test]
+    fn mapped_sparse_norms_match_the_heap_read() {
+        use crate::store::mmap::MMapDirectory;
+
+        let max_doc = 140_000;
+        let widths: [(i32, &str, i64); 4] = [
+            (0, "byte", 120),
+            (1, "short", 30_000),
+            (2, "int", 2_000_000_000),
+            (3, "long", 9_000_000_000_000_000_000),
+        ];
+        let mut values_map = HashMap::new();
+        let mut fis_fields = Vec::new();
+        for &(number, name, scale) in &widths {
+            fis_fields.push(norm_field(name, number));
+            // Sparse in every block, with a dense stretch in block 1.
+            let docs: Vec<(i32, i64)> = (0..max_doc)
+                .filter(|d| d % (7 + number) == 0 || (70_000..90_000).contains(d))
+                .map(|d| (d, ((d as i64 * 31) % 255 - 127) * (scale / 127)))
+                .collect();
+            values_map.insert(number, docs);
+        }
+        let fis = field_infos(fis_fields);
+        let info = test_segment_info("_0", max_doc);
+        let source = VecNormsProducer::new(values_map);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let mapped_dir: Arc<dyn Directory> =
+            Arc::new(MMapDirectory::open(temp.path().canonicalize().unwrap()).unwrap());
+        let heap_dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::default());
+        for dir in [&mapped_dir, &heap_dir] {
+            let mut consumer = Lucene90NormsFormat::new()
+                .norms_consumer(&write_state(dir, &info, &fis))
+                .unwrap();
+            for &(number, _, _) in &widths {
+                consumer
+                    .add_norms_field(fis.field_info_by_number(number).unwrap(), &source)
+                    .unwrap();
+            }
+            consumer.close().unwrap();
+        }
+        let mapped = Lucene90NormsProducer::new(&read_state(&mapped_dir, &info, &fis)).unwrap();
+        let heap = Lucene90NormsProducer::new(&read_state(&heap_dir, &info, &fis)).unwrap();
+
+        for &(number, name, _) in &widths {
+            let field = fis.field_info_by_number(number).unwrap();
+            // Positive control: the mapped producer's values slice has bytes,
+            // the heap one's has none.
+            let entry = mapped.norms.get(number).unwrap();
+            assert!(values_segment_of(&mapped.get_data_input(field, entry).unwrap()).is_some());
+            let entry = heap.norms.get(number).unwrap();
+            assert!(values_segment_of(&heap.get_data_input(field, entry).unwrap()).is_none());
+
+            let mut m = mapped.get_norms(field).unwrap().unwrap();
+            let mut h = heap.get_norms(field).unwrap().unwrap();
+            for target in (0..max_doc).step_by(3) {
+                let found = m.advance_exact(target).unwrap();
+                assert_eq!(found, h.advance_exact(target).unwrap(), "{name} {target}");
+                if found {
+                    assert_eq!(
+                        m.long_value().unwrap(),
+                        h.long_value().unwrap(),
+                        "{name} {target}"
+                    );
+                }
+            }
+
+            let mut m = mapped.get_norms(field).unwrap().unwrap();
+            let mut h = heap.get_norms(field).unwrap().unwrap();
+            let docs: Vec<i32> = (0..max_doc).filter(|d| d % 5 == 1).collect();
+            for window in docs.chunks(128) {
+                let mut mv = vec![0i64; window.len()];
+                let mut hv = vec![0i64; window.len()];
+                m.long_values(window.len() as i32, window, 0, &mut mv, 0, 1)
+                    .unwrap();
+                h.long_values(window.len() as i32, window, 0, &mut hv, 0, 1)
+                    .unwrap();
+                assert_eq!(mv, hv, "{name}");
+            }
+        }
+
+        // rmp #679: a merge instance's shared values slice carries the mapped
+        // bytes too (positive control: the heap one's has none), and its
+        // iterators, read as `PushPostingsWriterBase.writeTerm` and
+        // `startDoc` read them (one `getNorms` per term), give the heap
+        // merge instance's values.
+        let mapped_merge = mapped.merge_instance().unwrap();
+        let heap_merge = heap.merge_instance().unwrap();
+        for &(number, name, _) in &widths {
+            let field = fis.field_info_by_number(number).unwrap();
+            let entry = mapped_merge.norms.get(number).unwrap();
+            assert!(
+                values_segment_of(&mapped_merge.get_data_input(field, entry).unwrap()).is_some()
+            );
+            let entry = heap_merge.norms.get(number).unwrap();
+            assert!(values_segment_of(&heap_merge.get_data_input(field, entry).unwrap()).is_none());
+            for term in 0..3 {
+                let mut m = mapped_merge.get_norms(field).unwrap().unwrap();
+                let mut h = heap_merge.get_norms(field).unwrap().unwrap();
+                for target in (term..max_doc).step_by(11) {
+                    let found = m.advance_exact(target).unwrap();
+                    assert_eq!(found, h.advance_exact(target).unwrap(), "{name} {target}");
+                    if found {
+                        assert_eq!(
+                            m.long_value().unwrap(),
+                            h.long_value().unwrap(),
+                            "{name} {target}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl fmt::Display for Lucene90NormsProducer {
     /// Port of `Lucene90NormsProducer.toString()`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Lucene90NormsProducer(fields={})", self.norms.len())
+        write!(f, "Lucene90NormsProducer(fields={})", self.norms.size())
     }
 }
 

@@ -388,10 +388,8 @@ impl IndexSorter for StringSorter {
     /// values makes the ordinals comparable across segments, and each
     /// document compares by its global ordinal.
     ///
-    /// Java reads the ordinals map's terms and the per-document ordinals from
-    /// the same `SortedDocValues` objects. This port's `OrdinalMap::build_sorted`
-    /// consumes the values it walks, so each reader's values are asked for
-    /// twice: once for the map, once for the documents. Java's provider never
+    /// The ordinals map's terms and the per-document ordinals are read from
+    /// the same `SortedDocValues` objects, as in Java. Java's provider never
     /// answers `null` (`DocValues.getSorted` hands back an empty instance), so
     /// a reader without the field contributes empty values here too.
     fn get_comparable_providers(
@@ -410,7 +408,7 @@ impl IndexSorter for StringSorter {
         }
         let ordinal_map = Arc::new(crate::index::doc_values::OrdinalMap::build_sorted(
             None,
-            map_values,
+            &mut map_values,
             crate::util::packed::PackedInts::DEFAULT,
         )?);
         // `Integer.MAX_VALUE` for `SortField.STRING_LAST`, `Integer.MIN_VALUE`
@@ -421,8 +419,8 @@ impl IndexSorter for StringSorter {
             i64::from(i32::MIN)
         };
         let mut providers: Vec<ComparableProvider> = Vec::with_capacity(readers.len());
-        for (reader_index, reader) in readers.iter().enumerate() {
-            let reader_values = std::cell::RefCell::new(sorted_values(reader)?);
+        for (reader_index, reader_values) in map_values.into_iter().enumerate() {
+            let reader_values = std::cell::RefCell::new(reader_values);
             let ordinal_map = Arc::clone(&ordinal_map);
             providers.push(Box::new(move |doc_id: i32| {
                 let mut values = reader_values.borrow_mut();
@@ -1563,8 +1561,7 @@ mod tests {
     fn a_sorter_holds_its_sort_and_refuses_a_score_sort() {
         let error = Sorter::new(crate::search::Sort::new()).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "Cannot sort an index with a Sort that refers to the relevance score"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "Cannot sort an index with a Sort that refers to the relevance score"),
             "{error:?}"
         );
         let sorter = long_sorter();

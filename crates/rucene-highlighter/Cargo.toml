@@ -1,0 +1,31 @@
+[package]
+name = "rucene-highlighter"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.100"
+authors = ["Flavio CF Oliveira"]
+license = "MIT"
+description = "Rust port of Apache Lucene 10.5.0 lucene/highlighter (highlight, vectorhighlight, uhighlight, matchhighlight)."
+repository = "https://github.com/FlavioCFOliveira/Rucene"
+publish = false
+
+[lib]
+name = "rucene_highlighter"
+
+[dependencies]
+rucene = { path = "../.." }
+rucene-queries = { path = "../rucene-queries" }
+rucene-memory = { path = "../rucene-memory" }
+rucene-analysis-common = { path = "../rucene-analysis-common" }
+
+[dev-dependencies]
+# The ported Lucene tests run on lucene/test-framework (and its randomized
+# testing base); the sprint-17 Java-oracle harness (`tests/sprint17_oracle/`,
+# rmp #628) draws on `randomizedtesting`.
+rucene-test-framework = { path = "../rucene-test-framework" }
+randomizedtesting = { path = "../randomizedtesting" }
+# Lucene's highlighter tests depend on lucene/queryparser (build.gradle
+# `moduleTestImplementation project(':lucene:queryparser')`):
+# TestMatchRegionRetriever and TestMatchHighlighter parse with
+# StandardQueryParser.
+rucene-queryparser = { path = "../rucene-queryparser" }

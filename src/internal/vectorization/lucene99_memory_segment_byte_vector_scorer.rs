@@ -151,18 +151,43 @@ impl Lucene99MemorySegmentByteVectorScorer {
         values: Arc<dyn ByteVectorValues>,
         query_vector: &[u8],
     ) -> Result<Option<Self>> {
+        Ok(Self::create_or_decline(similarity, input, values, query_vector)?.ok())
+    }
+
+    /// The body of [`create`](Self::create), which hands `values` back when
+    /// it declines — Java's `Optional.empty()` — instead of dropping them.
+    ///
+    /// Java's caller, `Lucene99MemorySegmentFlatVectorsScorer.getRandomVectorScorer`
+    /// (`Lucene99MemorySegmentFlatVectorsScorer.java:101-119`), then passes
+    /// the same `vectorValues` to its delegate. `create` declines before it
+    /// reads the values, so the caller can hand over the values it owns and
+    /// receive them back unchanged; they are moved behind an [`Arc`] only when
+    /// the scorer is built.
+    ///
+    /// # Errors
+    ///
+    /// As [`create`](Self::create).
+    pub(crate) fn create_or_decline<V>(
+        similarity: VectorSimilarityFunction,
+        input: &dyn IndexInput,
+        values: V,
+        query_vector: &[u8],
+    ) -> Result<std::result::Result<Self, V>>
+    where
+        V: std::ops::Deref<Target = dyn ByteVectorValues> + Into<Arc<dyn ByteVectorValues>>,
+    {
         let input = FilterIndexInput::unwrap_only_test(input);
         let Some(ms_input) = input.as_memory_segment_access_input() else {
-            return Ok(None);
+            return Ok(Err(values));
         };
         let vector_byte_size = values.vector_byte_length() as usize;
         check_invariants(values.size(), vector_byte_size, input)?;
-        Ok(Some(Self {
+        Ok(Ok(Self {
             similarity,
             vector_byte_size,
             input: ms_input.clone_access_input()?,
             max_ord: values.size(),
-            values,
+            values: values.into(),
             query: query_vector.to_vec(),
             scratch: Vec::new(),
         }))

@@ -57,6 +57,12 @@ static LENGTH_TABLE: LazyLock<[f32; 256]> = LazyLock::new(|| {
     table
 });
 
+/// The whole of [`LENGTH_TABLE`], for a loop over every entry: it is
+/// initialised once here rather than checked on each lookup.
+pub(crate) fn length_table() -> &'static [f32; 256] {
+    &LENGTH_TABLE
+}
+
 /// Looks up the decoded length of an encoded norm as a `float`.
 ///
 /// This is the `LENGTH_TABLE[Byte.toUnsignedInt((byte) norm)]` lookup that

@@ -122,14 +122,7 @@ impl LongComparator {
 
     /// Equivalent to the private `LongComparator.LongLeafComparator.getValueForDoc(int)`.
     fn get_value_for_doc(&self, leaf: &mut NumericLeafState, doc: i32) -> Result<i64> {
-        let missing_value = self.missing_value;
-        let doc_values = leaf.doc_values();
-        if doc_values.advance_exact(doc)? {
-            let raw = doc_values.long_value()?;
-            Ok(raw)
-        } else {
-            Ok(missing_value)
-        }
+        Ok(leaf.exact_long_value(doc)?.unwrap_or(self.missing_value))
     }
 
     /// Equivalent to `LongComparator.LongLeafComparator.bottomAsComparableLong()`.

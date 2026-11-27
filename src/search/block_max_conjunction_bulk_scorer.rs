@@ -258,8 +258,8 @@ impl BlockMaxConjunctionBulkScorer {
         }
 
         let mut max_other_doc = -1;
-        for i in 1..self.scorers.len() {
-            max_other_doc = max_other_doc.max(self.scorers[i].doc_id());
+        for scorer in &self.scorers[1..] {
+            max_other_doc = max_other_doc.max(scorer.doc_id());
         }
         if self.scorers[0].doc_id() < max_other_doc {
             self.scorers[0].iterator().advance(max_other_doc)?;

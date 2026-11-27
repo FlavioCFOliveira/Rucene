@@ -287,6 +287,18 @@ impl Analyzer for CustomAnalyzer {
     /// Equivalent to `CustomAnalyzer.createComponents(String)`: the
     /// tokenizer over `attributeFactory(fieldName)`, wrapped by each token
     /// filter in order; the tokenizer's `setReader` is the source.
+    /// The components as owned stages, when there is no char filter and
+    /// every factory describes its stage (rmp #679/#682 owned stream).
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        if !self.char_filters.is_empty() {
+            return None;
+        }
+        rucene::analysis::owned::stages_of_factories(self.tokenizer.as_ref(), &self.token_filters)
+    }
+
     fn create_components(&self, field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tk = Arc::new(AtomicRefCell::new(
             self.tokenizer
@@ -1272,5 +1284,243 @@ impl<'a> ConditionBuilder<'a> {
         let factory: Box<dyn TokenFilterFactory> = factory;
         parent.add_token_filter_factory(Arc::from(factory));
         Ok(parent)
+    }
+}
+
+#[cfg(test)]
+mod owned_stream_tests {
+    //! rmp #679/#682 owned stream: `Analyzer.tokenStream(fieldName, text)`
+    //! returns the owned stream for every analyzer that describes owned
+    //! stages, and that stream produces exactly the tokens and end state of
+    //! the components' shared sink.
+
+    use rucene::analysis::owned::public_and_shared_tokens;
+    use rucene::analysis::tokenattributes::{CharTermAttribute, PayloadAttribute};
+    use rucene::analysis::{Analyzer, StandardAnalyzer};
+    use rucene::util::BytesRef;
+
+    use super::CustomAnalyzer;
+    use crate::analysis::core::simple_analyzer::SimpleAnalyzer;
+    use crate::analysis::core::stop_analyzer::StopAnalyzer;
+    use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
+    use crate::analysis::en::english_analyzer::EnglishAnalyzer;
+
+    const TEXTS: [&str; 10] = [
+        "The Quick brown FOX, jumps over the lazy dog's back 1234 x.y.z 3.14!",
+        "",
+        "   ",
+        "\t tabs\tand\nnewlines\u{000B}vt\u{001C}fs\u{00A0}nbsp\u{2007}fig\u{3000}ideo ",
+        "a an and are as at be but by for if in into is it no not of on or such",
+        "Running runners ran; the cats' toys and John's books, ponies' meadows.",
+        "supercalifragilisticexpialidocious antidisestablishmentarianism ok",
+        "\u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} caf\u{e9} na\u{ef}ve \u{1F600} emoji \u{10400}x",
+        "the end is the of",
+        "one two the three the the four five six seven of eight",
+    ];
+
+    /// The module "on the class path": its factories reloaded into the
+    /// core lookups (see [`crate::spi`]).
+    fn load_factories() {
+        let loader = crate::spi::class_loader();
+        rucene::analysis::factories::reload_char_filters(loader).unwrap();
+        rucene::analysis::factories::reload_token_filters(loader).unwrap();
+        rucene::analysis::factories::reload_tokenizers(loader).unwrap();
+    }
+
+    fn custom(tokenizer: (&str, &[&str]), filters: &[(&str, &[&str])]) -> CustomAnalyzer {
+        load_factories();
+        let mut builder = CustomAnalyzer::builder();
+        builder.with_tokenizer(tokenizer.0, tokenizer.1).unwrap();
+        for (name, params) in filters {
+            builder.add_token_filter(name, params).unwrap();
+        }
+        builder.build().unwrap()
+    }
+
+    fn analyzers() -> Vec<Box<dyn Analyzer>> {
+        let shingles: [&[&str]; 6] = [
+            &["maxShingleSize", "2", "outputUnigrams", "true"],
+            &["maxShingleSize", "2", "outputUnigrams", "false"],
+            &["maxShingleSize", "4", "outputUnigrams", "true"],
+            &["maxShingleSize", "4", "outputUnigrams", "false"],
+            &[
+                "minShingleSize",
+                "3",
+                "maxShingleSize",
+                "4",
+                "outputUnigrams",
+                "false",
+                "outputUnigramsIfNoShingles",
+                "true",
+            ],
+            &[
+                "maxShingleSize",
+                "3",
+                "tokenSeparator",
+                "+",
+                "fillerToken",
+                "FILL",
+            ],
+        ];
+        let mut analyzers: Vec<Box<dyn Analyzer>> = vec![
+            Box::new(StandardAnalyzer::new()),
+            Box::new(EnglishAnalyzer::new()),
+            Box::new(WhitespaceAnalyzer::new()),
+            Box::new(WhitespaceAnalyzer::with_max_token_length(5)),
+            Box::new(SimpleAnalyzer::new()),
+            Box::new(StopAnalyzer::new(
+                EnglishAnalyzer::get_default_stop_set().clone(),
+            )),
+            Box::new(custom(
+                ("standard", &[]),
+                &[
+                    ("englishPossessive", &[]),
+                    ("lowercase", &[]),
+                    ("stop", &[]),
+                    ("porterStem", &[]),
+                ],
+            )),
+            Box::new(custom(
+                ("standard", &[]),
+                &[
+                    ("englishPossessive", &[]),
+                    ("lowercase", &[]),
+                    ("stop", &[]),
+                    ("snowballPorter", &["language", "English"]),
+                ],
+            )),
+            Box::new(custom(
+                ("standard", &["maxTokenLength", "6"]),
+                &[
+                    ("englishPossessive", &[]),
+                    ("lowercase", &[]),
+                    ("stop", &[]),
+                ],
+            )),
+            Box::new(custom(("whitespace", &["rule", "java"]), &[])),
+            Box::new(custom(("whitespace", &["rule", "unicode"]), &[])),
+            Box::new(custom(("standard", &[]), &[])),
+        ];
+        for params in shingles {
+            analyzers.push(Box::new(custom(("standard", &[]), &[("shingle", params)])));
+            // A stop filter below the shingles leaves position gaps: fillers.
+            analyzers.push(Box::new(custom(
+                ("standard", &[]),
+                &[("lowercase", &[]), ("stop", &[]), ("shingle", params)],
+            )));
+        }
+        analyzers
+    }
+
+    /// Every covered analyzer's public stream is the owned stream, and it
+    /// produces the shared sink's tokens and end state, value after value.
+    #[test]
+    fn public_streams_of_covered_analyzers_match_their_shared_sinks() {
+        for analyzer in analyzers() {
+            for text in TEXTS {
+                for _value in 0..2 {
+                    let (shared, public) = public_and_shared_tokens(analyzer.as_ref(), "f", text)
+                        .unwrap()
+                        .unwrap_or_else(|| {
+                            panic!("{} returns its owned stream", analyzer.analyzer_to_string())
+                        });
+                    assert_eq!(
+                        public,
+                        shared,
+                        "{} over {text:?}",
+                        analyzer.analyzer_to_string()
+                    );
+                }
+            }
+        }
+    }
+
+    /// A char filter keeps the analyzer on the shared sink: `initReader`
+    /// would be bypassed.
+    #[test]
+    fn a_char_filter_keeps_the_shared_sink() {
+        load_factories();
+        let mut builder = CustomAnalyzer::builder();
+        builder.with_tokenizer("standard", &[]).unwrap();
+        builder.add_char_filter("htmlStrip", &[]).unwrap();
+        let analyzer = builder.build().unwrap();
+        assert!(public_and_shared_tokens(&analyzer, "f", "<b>bold</b>")
+            .unwrap()
+            .is_none());
+    }
+
+    /// The owned stream keeps the `Tokenizer` contract: a second
+    /// `tokenStream` after `reset()` without `close()` fails with Java's
+    /// message, and `reset()` twice reads the illegal-state reader.
+    #[test]
+    fn the_owned_stream_keeps_the_tokenizer_contract() {
+        let analyzer = StandardAnalyzer::new();
+        let stream = analyzer.token_stream_from_str("f", "a b").unwrap();
+        stream.borrow_mut().reset().unwrap();
+        let error = analyzer.token_stream_from_str("f", "c").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("TokenStream contract violation: close() call missing"),
+            "{error}"
+        );
+        stream.borrow_mut().close().unwrap();
+        let stream = analyzer.token_stream_from_str("f", "c d").unwrap();
+        stream.borrow_mut().reset().unwrap();
+        stream.borrow_mut().reset().unwrap();
+        let error = stream.borrow_mut().increment_token().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("TokenStream contract violation: reset()/close() call missing"),
+            "{error}"
+        );
+        stream.borrow_mut().close().unwrap();
+        // The stream is usable again after close().
+        let stream = analyzer.token_stream_from_str("f", "e").unwrap();
+        let mut stream = stream.borrow_mut();
+        stream.reset().unwrap();
+        assert!(stream.increment_token().unwrap());
+        assert!(!stream.increment_token().unwrap());
+        stream.end().unwrap();
+        stream.close().unwrap();
+    }
+
+    /// A consumer that adds an attribute implementation the stages do not
+    /// drive (a `PayloadAttribute`) after `tokenStream` gets the shared
+    /// sink's run of the value: the same tokens, and the payload it set is
+    /// cleared at every token, as `clearAttributes()` clears it.
+    #[test]
+    fn an_added_attribute_implementation_runs_the_value_on_the_shared_sink() {
+        let analyzer = custom(("standard", &[]), &[("lowercase", &[])]);
+        let stream = analyzer
+            .token_stream_from_str("f", "One Two Three")
+            .unwrap();
+        let mut stream = stream.borrow_mut();
+        stream
+            .attribute_source_mut()
+            .add_attribute_interface::<dyn PayloadAttribute>()
+            .unwrap();
+        stream.reset().unwrap();
+        let mut terms = Vec::new();
+        while stream.increment_token().unwrap() {
+            let source = stream.attribute_source();
+            assert!(source
+                .get_attribute_interface::<dyn PayloadAttribute>()
+                .unwrap()
+                .get_payload()
+                .is_none());
+            source
+                .get_attribute_interface_mut::<dyn PayloadAttribute>()
+                .unwrap()
+                .set_payload(Some(BytesRef::new(vec![1])));
+            let term = source
+                .get_attribute_interface::<dyn CharTermAttribute>()
+                .unwrap();
+            terms.push(term.buffer()[..term.length()].iter().collect::<String>());
+        }
+        stream.end().unwrap();
+        stream.close().unwrap();
+        assert_eq!(terms, ["one", "two", "three"]);
     }
 }
