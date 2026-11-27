@@ -203,11 +203,11 @@ impl PivotOps for HashFallbackSorter<'_, '_> {
 fn compare_unsigned_from(a: &[u8], b: &[u8], k: usize) -> i32 {
     let a = a.get(k..).unwrap_or(&[]);
     let b = b.get(k..).unwrap_or(&[]);
-    let n = a.len().min(b.len());
-    for i in 0..n {
-        if a[i] != b[i] {
-            return i32::from(a[i]) - i32::from(b[i]);
-        }
+    // PERF: the first differing byte found eight bytes at a time, as the
+    // JDK's `Arrays.compareUnsigned` intrinsic compares wide words.
+    let i = crate::util::string_helper::mismatch_index(a, b);
+    if i < a.len().min(b.len()) {
+        return i32::from(a[i]) - i32::from(b[i]);
     }
     a.len() as i32 - b.len() as i32
 }

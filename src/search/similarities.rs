@@ -723,13 +723,14 @@ impl Similarity for BM25Similarity {
         };
         let avgdl = self.avg_field_length(collection_stats);
 
+        // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
+        // `float`; `1 - b` is an `int` minus a `float`, hence a `float`
+        // (`BM25Similarity.java:181-184`). PERF: the table is taken once, not
+        // through its lazy initialiser per entry, so the 256 divisions
+        // vectorise; each entry is computed exactly as before.
         let mut cache = [0.0f32; 256];
-        for (i, entry) in cache.iter_mut().enumerate() {
-            // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
-            // `float`; `1 - b` is an `int` minus a `float`, hence a `float`.
-            *entry = 1.0
-                / (self.k1
-                    * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));
+        for (entry, &length) in cache.iter_mut().zip(similarity_base::length_table()) {
+            *entry = 1.0 / (self.k1 * ((1.0 - self.b) + self.b * length / avgdl));
         }
         Box::new(BM25Scorer::new(boost, self.k1, self.b, idf, avgdl, cache))
     }
@@ -752,11 +753,14 @@ impl Similarity for BM25Similarity {
         };
         let avgdl = self.avg_field_length(collection_stats);
 
+        // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
+        // `float`; `1 - b` is an `int` minus a `float`, hence a `float`
+        // (`BM25Similarity.java:181-184`). PERF: the table is taken once, not
+        // through its lazy initialiser per entry, so the 256 divisions
+        // vectorise; each entry is computed exactly as before.
         let mut cache = [0.0f32; 256];
-        for (i, entry) in cache.iter_mut().enumerate() {
-            *entry = 1.0
-                / (self.k1
-                    * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));
+        for (entry, &length) in cache.iter_mut().zip(similarity_base::length_table()) {
+            *entry = 1.0 / (self.k1 * ((1.0 - self.b) + self.b * length / avgdl));
         }
         Box::new(BM25Scorer::new(boost, self.k1, self.b, idf, avgdl, cache))
     }

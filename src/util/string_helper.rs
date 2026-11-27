@@ -202,6 +202,34 @@ impl Ord for IntsRef {
 // StringHelper
 // ---------------------------------------------------------------------------
 
+/// The index of the first byte where `a` and `b` differ, or the shorter
+/// length when one is a prefix of the other: `Arrays.mismatch` without its
+/// `-1` for equal arrays.
+///
+/// PERF: eight bytes per step, as the JDK's `Arrays.mismatch` intrinsic
+/// compares wide words; the first differing byte of a word is the lowest set
+/// byte of the XOR (little-endian), so the index is the byte loop's
+/// (the same form as `LZ4.commonBytes` in `util::compress`).
+#[inline]
+pub(crate) fn mismatch_index(a: &[u8], b: &[u8]) -> usize {
+    let len = a.len().min(b.len());
+    let (a, b) = (&a[..len], &b[..len]);
+    let (aw, _) = a.as_chunks::<8>();
+    let (bw, _) = b.as_chunks::<8>();
+    for (i, (x, y)) in aw.iter().zip(bw).enumerate() {
+        let diff = u64::from_le_bytes(*x) ^ u64::from_le_bytes(*y);
+        if diff != 0 {
+            return i * 8 + (diff.trailing_zeros() / 8) as usize;
+        }
+    }
+    let done = aw.len() * 8;
+    a[done..]
+        .iter()
+        .zip(&b[done..])
+        .position(|(x, y)| x != y)
+        .map_or(len, |i| done + i)
+}
+
 /// Helpers for manipulating strings and byte references, equivalent to Lucene's
 /// `StringHelper`.
 pub struct StringHelper;
@@ -231,11 +259,7 @@ impl StringHelper {
                 "terms out of order: priorTerm={prior_term},currentTerm={current_term}"
             )));
         }
-        let mismatch = a
-            .iter()
-            .zip(b)
-            .position(|(x, y)| x != y)
-            .unwrap_or(a.len().min(b.len()));
+        let mismatch = mismatch_index(a, b);
         Ok(mismatch
             .try_into()
             .expect("INVARIANT: a Java array index fits an int"))
@@ -929,6 +953,34 @@ fn is_utf16_order_safe(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// `mismatch_index` finds the byte loop's first difference (or the shorter
+    /// length) for every length and every difference position.
+    #[test]
+    fn mismatch_index_matches_the_byte_loop() {
+        for len_a in 0..40usize {
+            for len_b in [0usize, 1, 7, 8, 9, 16, 33, 39] {
+                let a: Vec<u8> = (0..len_a).map(|i| (i * 7) as u8).collect();
+                let base: Vec<u8> = (0..len_b).map(|i| (i * 7) as u8).collect();
+                for flip in 0..=len_b {
+                    let mut b = base.clone();
+                    if flip < len_b {
+                        b[flip] ^= 0x80;
+                    }
+                    let expected = a
+                        .iter()
+                        .zip(&b)
+                        .position(|(x, y)| x != y)
+                        .unwrap_or(a.len().min(b.len()));
+                    assert_eq!(
+                        super::mismatch_index(&a, &b),
+                        expected,
+                        "{len_a} {len_b} {flip}"
+                    );
+                }
+            }
+        }
+    }
     use super::*;
 
     #[test]

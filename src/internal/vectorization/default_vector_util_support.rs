@@ -349,19 +349,23 @@ fn dot_product_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
     let mut i = 0usize;
 
     if a.len() > 32 {
-        let mut acc1 = 0.0f32;
-        let mut acc2 = 0.0f32;
-        let mut acc3 = 0.0f32;
-        let mut acc4 = 0.0f32;
+        // PERF: Java's `acc1..acc4` held as one four-lane array, each lane
+        // updated in Java's order, so the loop compiles to one vector
+        // multiply-add per step with the same rounding per accumulator.
+        let mut acc = [0.0f32; 4];
         let upper_bound = a.len() & !3;
-        while i < upper_bound {
-            acc1 = fma::<FMA>(a[i], b[i], acc1);
-            acc2 = fma::<FMA>(a[i + 1], b[i + 1], acc2);
-            acc3 = fma::<FMA>(a[i + 2], b[i + 2], acc3);
-            acc4 = fma::<FMA>(a[i + 3], b[i + 3], acc4);
-            i += 4;
+        for (x, y) in a[..upper_bound]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b[..upper_bound].as_chunks::<4>().0)
+        {
+            for k in 0..4 {
+                acc[k] = fma::<FMA>(x[k], y[k], acc[k]);
+            }
         }
-        res += acc1 + acc2 + acc3 + acc4;
+        i = upper_bound;
+        res += acc[0] + acc[1] + acc[2] + acc[3];
     }
 
     while i < a.len() {
@@ -379,27 +383,30 @@ fn cosine_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
     let mut i = 0usize;
 
     if a.len() > 32 {
-        let mut sum1 = 0.0f32;
-        let mut sum2 = 0.0f32;
-        let mut norm1_1 = 0.0f32;
-        let mut norm1_2 = 0.0f32;
-        let mut norm2_1 = 0.0f32;
-        let mut norm2_2 = 0.0f32;
+        // PERF: Java's pairs `sum1/sum2`, `norm1_1/norm1_2` and
+        // `norm2_1/norm2_2` held as two-lane arrays, each lane updated in
+        // Java's order (same rounding per accumulator).
+        let mut sums = [0.0f32; 2];
+        let mut norms1 = [0.0f32; 2];
+        let mut norms2 = [0.0f32; 2];
 
         let upper_bound = a.len() & !1;
-        while i < upper_bound {
-            sum1 = fma::<FMA>(a[i], b[i], sum1);
-            norm1_1 = fma::<FMA>(a[i], a[i], norm1_1);
-            norm2_1 = fma::<FMA>(b[i], b[i], norm2_1);
-
-            sum2 = fma::<FMA>(a[i + 1], b[i + 1], sum2);
-            norm1_2 = fma::<FMA>(a[i + 1], a[i + 1], norm1_2);
-            norm2_2 = fma::<FMA>(b[i + 1], b[i + 1], norm2_2);
-            i += 2;
+        for (x, y) in a[..upper_bound]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(b[..upper_bound].as_chunks::<2>().0)
+        {
+            for k in 0..2 {
+                sums[k] = fma::<FMA>(x[k], y[k], sums[k]);
+                norms1[k] = fma::<FMA>(x[k], x[k], norms1[k]);
+                norms2[k] = fma::<FMA>(y[k], y[k], norms2[k]);
+            }
         }
-        sum += sum1 + sum2;
-        norm1 += norm1_1 + norm1_2;
-        norm2 += norm2_1 + norm2_2;
+        i = upper_bound;
+        sum += sums[0] + sums[1];
+        norm1 += norms1[0] + norms1[1];
+        norm2 += norms2[0] + norms2[1];
     }
 
     while i < a.len() {
@@ -418,27 +425,23 @@ fn square_distance_f32_kernel_impl<const FMA: bool>(a: &[f32], b: &[f32]) -> f32
     let mut i = 0usize;
 
     if a.len() > 32 {
-        let mut acc1 = 0.0f32;
-        let mut acc2 = 0.0f32;
-        let mut acc3 = 0.0f32;
-        let mut acc4 = 0.0f32;
-
+        // PERF: as in the dot product, Java's four accumulators as one
+        // four-lane array updated lane by lane in Java's order.
+        let mut acc = [0.0f32; 4];
         let upper_bound = a.len() & !3;
-        while i < upper_bound {
-            let diff1 = a[i] - b[i];
-            acc1 = fma::<FMA>(diff1, diff1, acc1);
-
-            let diff2 = a[i + 1] - b[i + 1];
-            acc2 = fma::<FMA>(diff2, diff2, acc2);
-
-            let diff3 = a[i + 2] - b[i + 2];
-            acc3 = fma::<FMA>(diff3, diff3, acc3);
-
-            let diff4 = a[i + 3] - b[i + 3];
-            acc4 = fma::<FMA>(diff4, diff4, acc4);
-            i += 4;
+        for (x, y) in a[..upper_bound]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b[..upper_bound].as_chunks::<4>().0)
+        {
+            for k in 0..4 {
+                let diff = x[k] - y[k];
+                acc[k] = fma::<FMA>(diff, diff, acc[k]);
+            }
         }
-        res += acc1 + acc2 + acc3 + acc4;
+        i = upper_bound;
+        res += acc[0] + acc[1] + acc[2] + acc[3];
     }
 
     while i < a.len() {
@@ -697,5 +700,148 @@ impl VectorUtilSupport for DefaultVectorUtilSupport {
             }
         }
         new_size
+    }
+}
+
+#[cfg(test)]
+mod lane_array_identity_tests {
+    use super::*;
+
+    /// The previous scalar-accumulator form of the dot product (Java's code
+    /// line for line), the reference for the lane-array form.
+    fn dot_reference<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+        let mut res = 0.0f32;
+        let mut i = 0usize;
+        if a.len() > 32 {
+            let (mut acc1, mut acc2, mut acc3, mut acc4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let upper_bound = a.len() & !3;
+            while i < upper_bound {
+                acc1 = fma::<FMA>(a[i], b[i], acc1);
+                acc2 = fma::<FMA>(a[i + 1], b[i + 1], acc2);
+                acc3 = fma::<FMA>(a[i + 2], b[i + 2], acc3);
+                acc4 = fma::<FMA>(a[i + 3], b[i + 3], acc4);
+                i += 4;
+            }
+            res += acc1 + acc2 + acc3 + acc4;
+        }
+        while i < a.len() {
+            res = fma::<FMA>(a[i], b[i], res);
+            i += 1;
+        }
+        res
+    }
+
+    fn cosine_reference<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+        let (mut sum, mut norm1, mut norm2) = (0.0f32, 0.0f32, 0.0f32);
+        let mut i = 0usize;
+        if a.len() > 32 {
+            let (mut sum1, mut sum2) = (0.0f32, 0.0f32);
+            let (mut norm1_1, mut norm1_2, mut norm2_1, mut norm2_2) =
+                (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let upper_bound = a.len() & !1;
+            while i < upper_bound {
+                sum1 = fma::<FMA>(a[i], b[i], sum1);
+                norm1_1 = fma::<FMA>(a[i], a[i], norm1_1);
+                norm2_1 = fma::<FMA>(b[i], b[i], norm2_1);
+                sum2 = fma::<FMA>(a[i + 1], b[i + 1], sum2);
+                norm1_2 = fma::<FMA>(a[i + 1], a[i + 1], norm1_2);
+                norm2_2 = fma::<FMA>(b[i + 1], b[i + 1], norm2_2);
+                i += 2;
+            }
+            sum += sum1 + sum2;
+            norm1 += norm1_1 + norm1_2;
+            norm2 += norm2_1 + norm2_2;
+        }
+        while i < a.len() {
+            sum = fma::<FMA>(a[i], b[i], sum);
+            norm1 = fma::<FMA>(a[i], a[i], norm1);
+            norm2 = fma::<FMA>(b[i], b[i], norm2);
+            i += 1;
+        }
+        (f64::from(sum) / (f64::from(norm1) * f64::from(norm2)).sqrt()) as f32
+    }
+
+    fn square_distance_reference<const FMA: bool>(a: &[f32], b: &[f32]) -> f32 {
+        let mut res = 0.0f32;
+        let mut i = 0usize;
+        if a.len() > 32 {
+            let (mut acc1, mut acc2, mut acc3, mut acc4) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+            let upper_bound = a.len() & !3;
+            while i < upper_bound {
+                let d1 = a[i] - b[i];
+                acc1 = fma::<FMA>(d1, d1, acc1);
+                let d2 = a[i + 1] - b[i + 1];
+                acc2 = fma::<FMA>(d2, d2, acc2);
+                let d3 = a[i + 2] - b[i + 2];
+                acc3 = fma::<FMA>(d3, d3, acc3);
+                let d4 = a[i + 3] - b[i + 3];
+                acc4 = fma::<FMA>(d4, d4, acc4);
+                i += 4;
+            }
+            res += acc1 + acc2 + acc3 + acc4;
+        }
+        while i < a.len() {
+            let d = a[i] - b[i];
+            res = fma::<FMA>(d, d, res);
+            i += 1;
+        }
+        res
+    }
+
+    fn vectors(len: usize, seed: &mut u64) -> (Vec<f32>, Vec<f32>) {
+        let mut next = || {
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 7;
+            *seed ^= *seed << 17;
+            ((*seed >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        };
+        let a = (0..len).map(|_| next()).collect();
+        let b = (0..len).map(|_| next()).collect();
+        (a, b)
+    }
+
+    /// The lane-array kernels return the bits of the scalar-accumulator form,
+    /// with and without FMA, at every length around the 32-element threshold
+    /// and the 2/4-element steps.
+    #[test]
+    fn lane_array_kernels_are_bit_identical_to_scalar_accumulators() {
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        for len in (0..80).chain([127, 128, 129, 384, 768, 1023, 1536]) {
+            for _ in 0..8 {
+                let (a, b) = vectors(len, &mut seed);
+                assert_eq!(
+                    dot_product_f32_kernel_impl::<false>(&a, &b).to_bits(),
+                    dot_reference::<false>(&a, &b).to_bits(),
+                    "dot, len {len}"
+                );
+                assert_eq!(
+                    dot_product_f32_kernel_impl::<true>(&a, &b).to_bits(),
+                    dot_reference::<true>(&a, &b).to_bits(),
+                    "dot fma, len {len}"
+                );
+                if len > 0 {
+                    assert_eq!(
+                        cosine_f32_kernel_impl::<false>(&a, &b).to_bits(),
+                        cosine_reference::<false>(&a, &b).to_bits(),
+                        "cosine, len {len}"
+                    );
+                    assert_eq!(
+                        cosine_f32_kernel_impl::<true>(&a, &b).to_bits(),
+                        cosine_reference::<true>(&a, &b).to_bits(),
+                        "cosine fma, len {len}"
+                    );
+                }
+                assert_eq!(
+                    square_distance_f32_kernel_impl::<false>(&a, &b).to_bits(),
+                    square_distance_reference::<false>(&a, &b).to_bits(),
+                    "square distance, len {len}"
+                );
+                assert_eq!(
+                    square_distance_f32_kernel_impl::<true>(&a, &b).to_bits(),
+                    square_distance_reference::<true>(&a, &b).to_bits(),
+                    "square distance fma, len {len}"
+                );
+            }
+        }
     }
 }

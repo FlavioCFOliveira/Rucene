@@ -682,7 +682,7 @@ impl Lz4WithPresetDictDecompressor {
     }
 
     /// `LZ4WithPresetDictDecompressor.decompress`, over any input.
-    fn decompress_from<I: DataInput + ?Sized>(
+    fn decompress_from<I: Lz4Window + ?Sized>(
         &mut self,
         input: &mut I,
         original_length: usize,
@@ -722,7 +722,9 @@ impl Lz4WithPresetDictDecompressor {
         bytes.length = 0;
 
         // The dictionary is needed by every block, so it is always read.
-        if Lz4::decompress(input, dict_length, &mut self.buffer, 0)? != dict_length {
+        if Lz4::decompress_with(input, dict_length, &mut self.buffer, 0, I::lz4_window)?
+            != dict_length
+        {
             // `LZ4WithPresetDictCompressionMode.java:105-107`.
             return Err(LuceneError::corrupt_index(
                 "Illegal dict length",
@@ -761,7 +763,13 @@ impl Lz4WithPresetDictDecompressor {
         }
         while offset_in_block < offset + length {
             let to_decompress = std::cmp::min(block_length, offset + length - offset_in_block);
-            Lz4::decompress(input, to_decompress, &mut self.buffer, dict_length)?;
+            Lz4::decompress_with(
+                input,
+                to_decompress,
+                &mut self.buffer,
+                dict_length,
+                I::lz4_window,
+            )?;
             bytes.bytes[bytes.length..bytes.length + to_decompress]
                 .copy_from_slice(&self.buffer[dict_length..dict_length + to_decompress]);
             bytes.length += to_decompress;
@@ -788,6 +796,30 @@ impl Lz4WithPresetDictDecompressor {
 /// logical position. The arena is checked open when the bytes are taken
 /// (`segmentSliceOrNull`); the mapping itself is reference-counted, so a read
 /// can never touch unmapped memory.
+/// An input [`Lz4::decompress_with`] can ask for its unread bytes, so that
+/// short literal runs are copied in one fixed 16-byte move.
+trait Lz4Window: DataInput {
+    /// The bytes from the input's position on, or `None` when it cannot lend
+    /// them (then every read goes through the input, as in Java).
+    fn lz4_window(&self) -> Option<&[u8]> {
+        None
+    }
+}
+
+impl Lz4Window for dyn DataInput + '_ {}
+
+impl Lz4Window for dyn IndexInput + '_ {}
+
+impl Lz4Window for MappedDataInput<'_> {
+    fn lz4_window(&self) -> Option<&[u8]> {
+        if self.delegated {
+            None
+        } else {
+            self.bytes.get(self.pos..)
+        }
+    }
+}
+
 struct MappedDataInput<'a> {
     bytes: &'a [u8],
     pos: usize,

@@ -660,8 +660,36 @@ impl Lz4 {
         dest: &mut [u8],
         d_off: usize,
     ) -> Result<usize> {
+        Self::decompress_with(input, decompressed_len, dest, d_off, |_| None)
+    }
+
+    /// [`decompress`](Self::decompress), with `window` lending the input's
+    /// unread bytes when it can, for the 16-byte literal copy below.
+    ///
+    /// PERF: Java copies a literal run with `readBytes` and a non-overlapping
+    /// match with `System.arraycopy` of `fastLen` bytes (`LZ4.java:105-140`);
+    /// both are short, variable-length copies, which in Rust are `memmove`
+    /// calls. When 16 bytes fit before `dest_end`, a literal run of at most 16
+    /// bytes and a match whose distance is at least 16 are copied here in
+    /// fixed 16-byte steps instead, which compile to register moves. Every
+    /// byte written lies below `dest_end` and is overwritten by the
+    /// decompression that follows if it is past the run, so `dest[..dest_end]`
+    /// ends byte-identical; a match of distance 16 or more copied in 16-byte
+    /// steps reads only bytes already final, as the byte-by-byte copy does.
+    /// Every other case, and every error, takes Java's path unchanged.
+    #[inline]
+    pub(crate) fn decompress_with<I: DataInput + ?Sized>(
+        input: &mut I,
+        decompressed_len: usize,
+        dest: &mut [u8],
+        d_off: usize,
+        window: fn(&I) -> Option<&[u8]>,
+    ) -> Result<usize> {
         let dest_end = d_off + decompressed_len;
         let mut d_off = d_off;
+        // The fixed copies need `dest_end` inside `dest`; Java's checks apply
+        // otherwise.
+        let fixed_copies = dest_end <= dest.len();
 
         loop {
             // Literals.
@@ -677,9 +705,20 @@ impl Lz4 {
                 }
             }
             if literal_len != 0 {
-                // `compressed.readBytes(dest, dOff, literalLen)`: a run the
-                // buffer cannot hold fails with the input's own range check.
-                input.read_bytes(Some(dest), d_off, literal_len)?;
+                let mut copied = false;
+                if fixed_copies && literal_len <= 16 && d_off + 16 <= dest_end {
+                    if let Some(chunk) = window(input).and_then(|w| w.get(..16)) {
+                        let chunk: [u8; 16] = copy16(chunk);
+                        dest[d_off..d_off + 16].copy_from_slice(&chunk);
+                        input.skip_bytes(literal_len as i64)?;
+                        copied = true;
+                    }
+                }
+                if !copied {
+                    // `compressed.readBytes(dest, dOff, literalLen)`: a run the
+                    // buffer cannot hold fails with the input's own range check.
+                    input.read_bytes(Some(dest), d_off, literal_len)?;
+                }
                 d_off += literal_len;
             }
 
@@ -707,6 +746,30 @@ impl Lz4 {
                 }
             }
             match_len += LZ4_MIN_MATCH;
+
+            let fixed_len = (match_len + 15) & !15;
+            if fixed_copies
+                && match_dec >= 16
+                && d_off >= match_dec
+                && d_off + fixed_len <= dest_end
+            {
+                // Each 16-byte step reads `[src, src + 16)`, which ends at or
+                // before `dst` because the distance is at least 16.
+                let mut src = d_off - match_dec;
+                let mut dst = d_off;
+                let match_end = d_off + match_len;
+                while dst < match_end {
+                    let chunk: [u8; 16] = copy16(&dest[src..src + 16]);
+                    dest[dst..dst + 16].copy_from_slice(&chunk);
+                    src += 16;
+                    dst += 16;
+                }
+                d_off = match_end;
+                if d_off >= dest_end {
+                    break;
+                }
+                continue;
+            }
 
             let fast_len = (match_len + 7) & !7;
             if match_dec < match_len || d_off + fast_len > dest_end {
@@ -771,6 +834,15 @@ impl Lz4 {
 
         Ok(d_off)
     }
+}
+
+/// The first 16 bytes of `bytes`, which holds at least 16, by value: a fixed
+/// size the copy compiles to one register move for.
+#[inline(always)]
+fn copy16(bytes: &[u8]) -> [u8; 16] {
+    let mut chunk = [0u8; 16];
+    chunk.copy_from_slice(&bytes[..16]);
+    chunk
 }
 
 // -----------------------------------------------------------------------------
@@ -961,6 +1033,194 @@ impl LowercaseAsciiCompression {
 mod tests {
     use super::*;
     use crate::store::{ByteArrayDataInput, VecDataOutput};
+
+    /// A slice input that lends its unread bytes, as the mapped stored-fields
+    /// input does, so that `decompress_with` takes the 16-byte literal copies.
+    struct WindowInput<'a> {
+        bytes: &'a [u8],
+        pos: usize,
+    }
+
+    impl DataInput for WindowInput<'_> {
+        fn read_byte(&mut self) -> Result<u8> {
+            let b = self.bytes[self.pos];
+            self.pos += 1;
+            Ok(b)
+        }
+        fn to_java_string(&self) -> std::borrow::Cow<'_, str> {
+            std::borrow::Cow::Borrowed("WindowInput")
+        }
+        fn read_bytes(&mut self, b: Option<&mut [u8]>, offset: usize, len: usize) -> Result<()> {
+            if let Some(b) = b {
+                b[offset..offset + len].copy_from_slice(&self.bytes[self.pos..self.pos + len]);
+            }
+            self.pos += len;
+            Ok(())
+        }
+        fn skip_bytes(&mut self, num_bytes: i64) -> Result<()> {
+            self.pos += num_bytes as usize;
+            Ok(())
+        }
+    }
+
+    fn window_of<'a>(input: &'a WindowInput<'_>) -> Option<&'a [u8]> {
+        input.bytes.get(input.pos..)
+    }
+
+    /// The LZ4 block format decoded byte by byte: the reference the fast
+    /// copies must reproduce.
+    fn reference_decode(src: &[u8], dest_len: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(dest_len);
+        let mut p = 0usize;
+        loop {
+            let token = src[p] as usize;
+            p += 1;
+            let mut lit = token >> 4;
+            if lit == 15 {
+                loop {
+                    let l = src[p] as usize;
+                    p += 1;
+                    lit += l;
+                    if l != 255 {
+                        break;
+                    }
+                }
+            }
+            out.extend_from_slice(&src[p..p + lit]);
+            p += lit;
+            if out.len() >= dest_len {
+                break;
+            }
+            let dec = u16::from_le_bytes([src[p], src[p + 1]]) as usize;
+            p += 2;
+            let mut ml = token & 15;
+            if ml == 15 {
+                loop {
+                    let l = src[p] as usize;
+                    p += 1;
+                    ml += l;
+                    if l != 255 {
+                        break;
+                    }
+                }
+            }
+            ml += LZ4_MIN_MATCH;
+            for _ in 0..ml {
+                let b = out[out.len() - dec];
+                out.push(b);
+            }
+            if out.len() >= dest_len {
+                break;
+            }
+        }
+        out
+    }
+
+    /// Deterministic test inputs: word text, byte runs (matches of distance
+    /// 1..64, overlapping and not) and incompressible noise.
+    fn lz4_inputs() -> Vec<Vec<u8>> {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let words = [
+            "the", "market", "said", "pct", "billion", "oil", "prices", "rose", "shares",
+            "company", "reuter", "dlrs", "year", "trade", "bank",
+        ];
+        let mut inputs = Vec::new();
+        for size in [9usize, 17, 31, 100, 1000, 4096, 16384, 60000] {
+            let mut text = Vec::new();
+            while text.len() < size {
+                text.extend_from_slice(words[(next() % words.len() as u64) as usize].as_bytes());
+                text.push(b' ');
+            }
+            text.truncate(size);
+            inputs.push(text);
+            let mut runs = Vec::new();
+            while runs.len() < size {
+                let period = 1 + (next() % 64) as usize;
+                let unit: Vec<u8> = (0..period).map(|_| next() as u8).collect();
+                for _ in 0..(1 + next() % 8) {
+                    runs.extend_from_slice(&unit);
+                }
+            }
+            runs.truncate(size);
+            inputs.push(runs);
+            inputs.push((0..size).map(|_| next() as u8).collect());
+        }
+        inputs
+    }
+
+    /// The 16-byte copies of `decompress_with` (with and without a lending
+    /// input) give the byte-by-byte result, at any destination offset, and
+    /// write nothing at or past `dest_end`.
+    #[test]
+    fn lz4_fixed_copies_match_byte_by_byte_decoding() {
+        for (n, input) in lz4_inputs().iter().enumerate() {
+            for high in [false, true] {
+                let mut out = VecDataOutput::new();
+                if high {
+                    Lz4::compress(
+                        input,
+                        0,
+                        input.len(),
+                        &mut out,
+                        &mut HighCompressionHashTable::new(),
+                    )
+                    .unwrap();
+                } else {
+                    Lz4::compress(
+                        input,
+                        0,
+                        input.len(),
+                        &mut out,
+                        &mut FastCompressionHashTable::new(),
+                    )
+                    .unwrap();
+                }
+                let compressed = out.into_inner();
+                let reference = reference_decode(&compressed, input.len());
+                assert_eq!(
+                    &reference[..input.len()],
+                    &input[..],
+                    "reference, input {n}"
+                );
+                for d_off in [0usize, 3, 40] {
+                    for lend in [false, true] {
+                        let mut dest = vec![0xA5u8; d_off + input.len() + 64];
+                        let end = if lend {
+                            let mut inp = WindowInput {
+                                bytes: &compressed,
+                                pos: 0,
+                            };
+                            Lz4::decompress_with(&mut inp, input.len(), &mut dest, d_off, window_of)
+                                .unwrap()
+                        } else {
+                            let mut inp = ByteArrayDataInput::new(&compressed);
+                            Lz4::decompress(&mut inp, input.len(), &mut dest, d_off).unwrap()
+                        };
+                        assert_eq!(end, d_off + reference.len(), "input {n} high {high}");
+                        assert_eq!(
+                            &dest[d_off..end],
+                            &reference[..],
+                            "input {n} high {high} lend {lend}"
+                        );
+                        assert!(
+                            dest[..d_off].iter().all(|&b| b == 0xA5),
+                            "before d_off, input {n}"
+                        );
+                        assert!(
+                            dest[end..].iter().all(|&b| b == 0xA5),
+                            "past dest_end, input {n}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn lz4_round_trip(input: &[u8], ht: &mut dyn Lz4HashTable) {
         let mut out = VecDataOutput::new();
