@@ -772,6 +772,18 @@ pub struct TermsHashPerField {
     /// and reads back; recomputing the sort on every read would sort the whole
     /// table again per field per flush.
     sorted_term_ids: Option<Vec<i32>>,
+    /// The term whose stream addresses the next two fields locate, or `-1`.
+    ///
+    /// Equivalent to Java's `termStreamAddressBuffer` and
+    /// `streamAddressOffset`, which `initStreamSlices` and
+    /// `positionStreamSlice` set for the term being added
+    /// (`TermsHashPerField.java:150-218`) and `writeByte` reads
+    /// (`TermsHashPerField.java:220-234`): the block of the `IntBlockPool`
+    /// that holds the term's stream addresses, and the offset of the first
+    /// one in it.
+    stream_term_id: i32,
+    stream_address_block: usize,
+    stream_address_offset: usize,
 }
 
 impl TermsHashPerField {
@@ -824,6 +836,9 @@ impl TermsHashPerField {
             bytes_used,
             last_doc_id: 0,
             sorted_term_ids: None,
+            stream_term_id: -1,
+            stream_address_block: 0,
+            stream_address_offset: 0,
         };
         field.init_postings();
         field
@@ -883,6 +898,7 @@ impl TermsHashPerField {
     /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.clear()`
     /// (`TermsHashPerField.java:311-318`).
     fn clear_postings(&mut self) {
+        self.stream_term_id = -1;
         if !self.postings.is_empty() {
             self.bytes_used.fetch_sub(
                 self.postings.len() as i64 * self.bytes_per_posting,
@@ -1158,15 +1174,25 @@ impl TermsHashPerField {
     ///
     /// Equivalent to `org.apache.lucene.index.TermsHashPerField#positionStreamSlice`.
     ///
-    /// Lucene also caches `termStreamAddressBuffer` and `streamAddressOffset`
-    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port's
-    /// write methods take the term id and find its addresses through
-    /// [`FreqProxPosting::address_offset`] instead, and the `newTerm`/`addTerm`
-    /// dispatch is the caller's, on the returned [`TermSlot`].
-    fn position_stream_slice(&self, term_id: i32) -> i32 {
+    /// As Lucene, it locates the term's stream addresses for the writes that
+    /// follow (`termStreamAddressBuffer`, `streamAddressOffset`); the
+    /// `newTerm`/`addTerm` dispatch is the caller's, on the returned
+    /// [`TermSlot`].
+    fn position_stream_slice(&mut self, term_id: i32) -> i32 {
         let term_id = -term_id - 1;
         debug_assert!((term_id as usize) < self.postings.len());
+        self.locate_streams(term_id);
         term_id
+    }
+
+    /// `termStreamAddressBuffer = intPool.buffers[intStart >> INT_BLOCK_SHIFT];
+    /// streamAddressOffset = intStart & INT_BLOCK_MASK` for `term_id`.
+    #[inline]
+    fn locate_streams(&mut self, term_id: i32) {
+        let address_offset = self.postings[term_id as usize].address_offset as usize;
+        self.stream_term_id = term_id;
+        self.stream_address_block = address_offset >> INT_BLOCK_SHIFT;
+        self.stream_address_offset = address_offset & INT_BLOCK_MASK;
     }
 
     /// Reserves `streamCount` addresses and one slice per stream for a freshly
@@ -1208,6 +1234,10 @@ impl TermsHashPerField {
         }
         slot.byte_start = int_pool.buffer(block)[stream_address_offset];
         self.postings[term_id as usize] = slot;
+        // `termStreamAddressBuffer = buffer; streamAddressOffset = ...`.
+        self.stream_term_id = term_id;
+        self.stream_address_block = block;
+        self.stream_address_offset = stream_address_offset;
         Ok(())
     }
 
@@ -1256,26 +1286,29 @@ impl TermsHashPerField {
         value: u8,
     ) -> Result<()> {
         debug_assert!(stream < self.stream_count);
-        let address_offset = self.postings[term_id as usize].address_offset;
-        let address = stream_address(int_pool, address_offset, stream) as usize;
+        // PERF: the term's stream addresses are located once per added token,
+        // as Java's `termStreamAddressBuffer`/`streamAddressOffset`
+        // (`TermsHashPerField.java:220-234`); the address is read and bumped
+        // in place, and the byte block is looked up once.
+        if term_id != self.stream_term_id {
+            self.locate_streams(term_id);
+        }
+        let slot = &mut int_pool.buffer_mut(self.stream_address_block)
+            [self.stream_address_offset + stream];
+        let address = *slot as usize;
         let block = address >> BYTE_BLOCK_SHIFT;
         let offset = address & BYTE_BLOCK_MASK;
-
-        if pool.buffer(block)[offset] != 0 {
-            // End of slice: chain a new one and restart there.
-            let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
-            let new_block = pool.buffer_upto() as usize;
-            pool.buffer_mut(new_block)[new_offset] = value;
-            set_stream_address(
-                int_pool,
-                address_offset,
-                stream,
-                new_offset as i32 + pool.byte_offset() + 1,
-            );
-        } else {
-            pool.buffer_mut(block)[offset] = value;
-            set_stream_address(int_pool, address_offset, stream, address as i32 + 1);
+        let bytes = pool.buffer_mut(block);
+        if bytes[offset] == 0 {
+            bytes[offset] = value;
+            *slot += 1;
+            return Ok(());
         }
+        // End of slice: chain a new one and restart there.
+        let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
+        let new_block = pool.buffer_upto() as usize;
+        pool.buffer_mut(new_block)[new_offset] = value;
+        *slot = new_offset as i32 + pool.byte_offset() + 1;
         Ok(())
     }
 
