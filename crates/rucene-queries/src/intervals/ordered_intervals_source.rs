@@ -286,8 +286,8 @@ impl IntervalIterator for OrderedIntervalIterator {
             let mut slop = end.wrapping_sub(start).wrapping_add(1);
             // use indexed loop since this is always a random access capable
             // list to avoid allocations in a hot nested loop
-            for j in 0..n {
-                slop = slop.wrapping_sub(self.base.sub_iterators[j].width());
+            for sub in &self.base.sub_iterators[..n] {
+                slop = slop.wrapping_sub(sub.width());
             }
             self.slop = slop;
             self.on_match.on_match()?;

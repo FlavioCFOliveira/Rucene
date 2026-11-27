@@ -185,8 +185,8 @@ impl LatLonPointDistanceComparator {
                 self.current_values
                     .resize(crate::util::ArrayUtil::oversize(count, 8), 0);
             }
-            for i in 0..count {
-                self.current_values[i] = current_docs.next_value()?;
+            for slot in &mut self.current_values[..count] {
+                *slot = current_docs.next_value()?;
             }
         }
         Ok(())
@@ -546,8 +546,8 @@ impl XYPointDistanceComparator {
                 self.current_values
                     .resize(crate::util::ArrayUtil::oversize(count, 8), 0);
             }
-            for i in 0..count {
-                self.current_values[i] = current_docs.next_value()?;
+            for slot in &mut self.current_values[..count] {
+                *slot = current_docs.next_value()?;
             }
         }
         Ok(())

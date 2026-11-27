@@ -343,8 +343,8 @@ impl MatchesIterator for DuplicateMatchesIterator {
         if !self.subs[last].next()? {
             return Ok(false);
         }
-        for i in 0..last {
-            self.subs[i].next()?;
+        for sub in &mut self.subs[..last] {
+            sub.next()?;
         }
         Ok(true)
     }

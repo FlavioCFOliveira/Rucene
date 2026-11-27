@@ -1,8 +1,8 @@
 [package]
 name = "icu4j"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 # The port is MIT; the translated ICU sources and the embedded ICU data stay
 # under the Unicode License v3, whose full text (with the third-party notices

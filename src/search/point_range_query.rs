@@ -528,8 +528,8 @@ impl IntersectVisitor for InverseVisitor<'_> {
     }
 
     fn visit_ints_ref(&mut self, ints_ref: &IntsRef) -> Result<()> {
-        for i in ints_ref.offset..ints_ref.offset + ints_ref.length {
-            BitSet::set(self.result, ints_ref.ints[i] as usize);
+        for &doc in &ints_ref.ints[ints_ref.offset..ints_ref.offset + ints_ref.length] {
+            BitSet::set(self.result, doc as usize);
         }
         self.cost += ints_ref.length as i64;
         Ok(())

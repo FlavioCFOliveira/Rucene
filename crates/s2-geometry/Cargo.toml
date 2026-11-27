@@ -1,8 +1,8 @@
 [package]
 name = "s2-geometry"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of s2-geometry-library-java 1.0.0, limited to the types Apache Lucene 10.5.0 spatial-extras uses."

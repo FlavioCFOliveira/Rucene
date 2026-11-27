@@ -434,8 +434,10 @@ impl BKDRadixSelector {
             left_count += size;
         }
         // Count right points
-        for i in (self.partition_bucket[common_prefix] as usize + 1)..HISTOGRAM_SIZE {
-            right_count += self.histogram[i];
+        for &count in
+            &self.histogram[(self.partition_bucket[common_prefix] as usize + 1)..HISTOGRAM_SIZE]
+        {
+            right_count += count;
         }
 
         let delta = self.histogram[self.partition_bucket[common_prefix] as usize];

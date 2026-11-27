@@ -793,8 +793,8 @@ impl Lucene104PostingsWriter {
             let mut num_skip_bytes = self.level0_output.len();
 
             let mut or_val = 0i32;
-            for i in 0..block_size {
-                or_val |= self.doc_delta_buffer[i];
+            for &delta in &self.doc_delta_buffer[..block_size] {
+                or_val |= delta;
             }
             debug_assert!(or_val != 0);
             let bits_per_value = 32 - (or_val as u32).leading_zeros() as i32;

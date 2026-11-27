@@ -340,8 +340,8 @@ fn is_same_string(
 
 /// Equivalent to `readForms(IntsRef, ByteArrayDataInput, int)`.
 fn read_forms(forms: &mut IntsRef, input: &mut ByteArrayDataInput<'_>, length: usize) {
-    for i in 0..length {
-        forms.ints[i] = read_vint(input);
+    for form in &mut forms.ints[..length] {
+        *form = read_vint(input);
     }
     forms.length = length;
 }

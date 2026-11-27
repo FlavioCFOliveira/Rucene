@@ -1072,8 +1072,8 @@ impl BlockPostingsEnum {
                     // written over `docBuffer` as Java's
                     // `docCumulativeWordPopCounts = docBuffer` does
                     // (`Lucene104PostingsReader.java:312, 614-622`).
-                    for i in 0..BS / 64 {
-                        self.doc_buffer[i] = ((i + 1) * 64) as i32;
+                    for (i, slot) in self.doc_buffer[..BS / 64].iter_mut().enumerate() {
+                        *slot = ((i + 1) * 64) as i32;
                     }
                 }
             } else {

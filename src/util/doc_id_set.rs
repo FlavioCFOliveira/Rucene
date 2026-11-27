@@ -846,15 +846,14 @@ impl BulkAdder<'_> {
 
     /// Adds every document in `docs`.
     pub fn add_ints(&mut self, docs: &IntsRef) {
-        for i in docs.offset..docs.offset + docs.length {
-            self.builder.adder_add(docs.ints[i]);
+        for &doc in &docs.ints[docs.offset..docs.offset + docs.length] {
+            self.builder.adder_add(doc);
         }
     }
 
     /// Adds every document in `docs` that is `>= doc_lower_bound_inclusive`.
     pub fn add_ints_from(&mut self, docs: &IntsRef, doc_lower_bound_inclusive: i32) {
-        for i in docs.offset..docs.offset + docs.length {
-            let doc = docs.ints[i];
+        for &doc in &docs.ints[docs.offset..docs.offset + docs.length] {
             if doc >= doc_lower_bound_inclusive {
                 self.builder.adder_add(doc);
             }

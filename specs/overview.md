@@ -1,6 +1,6 @@
 # Rucene — Project Specification Overview
 
-**Version:** 0.1.0  
+**Version:** 0.2.0  
 **Target reference:** Apache Lucene Core 10.5.0  
 **Reference URLs:**
 - Source tree: <https://github.com/apache/lucene/tree/releases/lucene/10.5.0/lucene/core>
@@ -24,7 +24,7 @@ The project pursues two dimensions of parity, whenever technically feasible:
 
 | Topic | Decision |
 |-------|----------|
-| Rust edition / MSRV | 2021 / 1.89+ |
+| Rust edition / MSRV | 2021 / 1.100+ |
 | Crate structure | Single crate with Cargo features per module |
 | API style | Mirror Java Lucene class/method names and organization as closely as idiomatic Rust permits |
 | Async model | Public API is fully async with `tokio`; backpressure and cancellation required from the start |

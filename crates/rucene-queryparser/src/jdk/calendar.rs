@@ -1466,8 +1466,8 @@ impl Calendar {
 
     fn get_set_state_fields(&self) -> i32 {
         let mut mask = 0;
-        for i in 0..FIELD_COUNT {
-            if self.stamp[i] != UNSET {
+        for (i, &stamp) in self.stamp[..FIELD_COUNT].iter().enumerate() {
+            if stamp != UNSET {
                 mask |= 1 << i;
             }
         }

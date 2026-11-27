@@ -138,8 +138,7 @@ impl CompetitiveImpactAccumulator {
         let mut impacts = Vec::new();
         let mut max_freq_for_lower_norms = 0;
 
-        for i in 0..256 {
-            let max_freq = self.max_freqs[i];
+        for (i, &max_freq) in self.max_freqs.iter().enumerate() {
             if max_freq > max_freq_for_lower_norms {
                 impacts.push(Impact::new(max_freq, i as i8 as i64));
                 max_freq_for_lower_norms = max_freq;

@@ -2914,6 +2914,10 @@ fn shared_random_access(
 /// `Dense*DocValues` and `Sparse*DocValues` inner classes: a dense field needs
 /// no documents-with-field stream and indexes its values by document id, while
 /// a sparse one indexes them by `IndexedDISI.index()`.
+// The `Sparse` variant is kept inline: a cursor is built once per doc-values
+// iterator and never moved on the per-document path, while boxing the
+// `IndexedDISI` would add a pointer indirection to every sparse advance.
+#[allow(clippy::large_enum_variant)]
 enum DocsCursor {
     /// `docsWithFieldOffset == -2`: no document carries the field.
     Empty { doc: i32 },

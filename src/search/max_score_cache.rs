@@ -123,8 +123,8 @@ impl MaxScoreCache {
         }
 
         let mut max_score = 0.0f32;
-        for i in 0..size {
-            max_score = max_score.max(self.score_spare[i]);
+        for &score in &self.score_spare[..size] {
+            max_score = max_score.max(score);
         }
         max_score
     }

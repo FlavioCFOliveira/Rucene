@@ -1144,8 +1144,8 @@ impl<'a> DirectMonotonicWriter<'a> {
         } else {
             let bits_required = DirectWriter::unsigned_bits_required(max_delta);
             let mut writer = DirectWriter::new(self.data, self.buffer_size as i64, bits_required)?;
-            for i in 0..self.buffer_size {
-                writer.add(self.buffer[i])?;
+            for &value in &self.buffer[..self.buffer_size] {
+                writer.add(value)?;
             }
             writer.finish()?;
             self.meta.write_byte(bits_required as u8)?;
@@ -1861,9 +1861,9 @@ impl<'a> AbstractBlockPackedWriterOps<'a> for BlockPackedWriter<'a> {
 
         let mut min = i64::MAX;
         let mut max = i64::MIN;
-        for i in 0..off {
-            min = cmp::min(min, self.base.values[i]);
-            max = cmp::max(max, self.base.values[i]);
+        for &value in &self.base.values[..off] {
+            min = cmp::min(min, value);
+            max = cmp::max(max, value);
         }
 
         let delta = max.wrapping_sub(min);
@@ -1892,8 +1892,8 @@ impl<'a> AbstractBlockPackedWriterOps<'a> for BlockPackedWriter<'a> {
 
         if bits_required > 0 {
             if min != 0 {
-                for i in 0..off {
-                    self.base.values[i] -= min;
+                for value in &mut self.base.values[..off] {
+                    *value -= min;
                 }
             }
             self.base.write_values(bits_required)?;
@@ -2198,8 +2198,8 @@ impl<'a, I: DataInput + ?Sized> BlockPackedReaderIterator<'a, I> {
                 // block header can pair a large `bitsPerValue` with an extreme
                 // zig-zag minimum — so the sum has to wrap here too rather than
                 // abort a debug build on bytes Lucene decodes without complaint.
-                for i in 0..value_count {
-                    self.values[i] = self.values[i].wrapping_add(min_value);
+                for value in &mut self.values[..value_count] {
+                    *value = value.wrapping_add(min_value);
                 }
             }
         }

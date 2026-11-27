@@ -391,15 +391,14 @@ impl Builder {
 
             // now write our output data:
             let mut count = 0;
-            for i in 0..num_entries {
+            for &ent in &output.ords[..num_entries] {
                 if let Some(dedup_set) = dedup_set.as_mut() {
-                    let ent = output.ords[i];
                     if dedup_set.contains(&ent) {
                         continue;
                     }
                     dedup_set.insert(ent);
                 }
-                write_vint(&mut scratch, output.ords[i]);
+                write_vint(&mut scratch, ent);
                 count += 1;
             }
 
