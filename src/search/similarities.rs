@@ -663,12 +663,17 @@ impl BM25Similarity {
         let df = term_stats.doc_freq();
         let doc_count = collection_stats.doc_count();
         let idf = self.idf(df, doc_count);
-        Explanation::matched(
+        // PERF: literal descriptions, held without a copy as Java holds them.
+        Explanation::matched_static(
             idf,
             "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:",
             vec![
-                Explanation::matched(df, "n, number of documents containing term", vec![]),
-                Explanation::matched(doc_count, "N, total number of documents with field", vec![]),
+                Explanation::matched_static(df, "n, number of documents containing term", vec![]),
+                Explanation::matched_static(
+                    doc_count,
+                    "N, total number of documents with field",
+                    vec![],
+                ),
             ],
         )
     }
@@ -691,7 +696,7 @@ impl BM25Similarity {
             idf += f64::from(idf_explain.value().float_value());
             details.push(idf_explain);
         }
-        Explanation::matched(idf as f32, "idf, sum of:", details)
+        Explanation::matched_static(idf as f32, "idf, sum of:", details)
     }
 }
 
