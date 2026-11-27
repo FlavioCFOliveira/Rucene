@@ -270,6 +270,11 @@ impl<'a> std::iter::Iterator for JavaLines<'a> {
     }
 }
 
+/// A collection file as [`read_collection_file_sized`] returns it: the date
+/// line, the title line, the body's UTF-16 units, and the file's size when
+/// the whole file was read.
+pub(crate) type CollectionFile = (Option<String>, Option<String>, Vec<u16>, Option<u64>);
+
 /// Reads a Reuters/Dir collection file: first line is the date, 3rd is the
 /// title, rest is body (each line followed by a space).
 ///
@@ -277,13 +282,20 @@ impl<'a> std::iter::Iterator for JavaLines<'a> {
 // PERF: the body lines are appended as the UTF-16 units the reader decodes,
 // as Java's `StringBuilder` does, instead of a `String` per line that
 // `DocData::set_body` then re-encoded (rmp #679).
-pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<String>, Vec<u16>)> {
+///
+/// Also returns the file's size when the whole file was read:
+/// `Files.size(f)`, which the caller adds to its byte count, is then the
+/// length read, with no second look-up of the file.
+pub(crate) fn read_collection_file_sized(f: &Path) -> Result<CollectionFile> {
     // PERF: the file is read in one call and, when it is valid UTF-8 (what
     // `Files.newBufferedReader(f, UTF_8)` decodes without a
     // `MalformedInputException`), split into `readLine()`'s lines in place,
     // with no per-line buffer. Invalid input takes the reader below, which
     // raises Java's exception where Java raises it.
-    let bytes = std::fs::read(f)?;
+    // PERF: read to the end with no size query first (`fs::read` asks the
+    // file's metadata); a collection file fits one read.
+    let mut bytes = Vec::with_capacity(8192);
+    std::io::Read::read_to_end(&mut std::fs::File::open(f)?, &mut bytes)?;
     if let Ok(text) = std::str::from_utf8(&bytes) {
         let mut lines = JavaLines(text);
         let date_str = lines.next().map(str::to_string);
@@ -295,7 +307,7 @@ pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<S
             body_buf.extend(line.encode_utf16());
             body_buf.push(u16::from(b' '));
         }
-        return Ok((date_str, title, body_buf));
+        return Ok((date_str, title, body_buf, Some(bytes.len() as u64)));
     }
     let mut reader = jdk::new_buffered_reader_utf8(f)?;
     let result = (|| -> Result<(Option<String>, Option<String>, Vec<u16>)> {
@@ -313,7 +325,7 @@ pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<S
     let closed = reader.close();
     let value = result?;
     closed?;
-    Ok(value)
+    Ok((value.0, value.1, value.2, None))
 }
 
 impl ContentItemsSource for DirContentSource {
@@ -389,8 +401,12 @@ impl ContentSource for DirContentSource {
             (f, name)
         };
 
-        let (date_str, title, body_buf) = read_collection_file(&f)?;
-        self.base.add_bytes(std::fs::metadata(&f)?.len() as i64);
+        let (date_str, title, body_buf, size) = read_collection_file_sized(&f)?;
+        let size = match size {
+            Some(size) => size,
+            None => std::fs::metadata(&f)?.len(),
+        };
+        self.base.add_bytes(size as i64);
 
         let date_str = date_str.ok_or_else(LuceneError::null_pointer)?;
         let dfi = self.get_date_format_info()?;

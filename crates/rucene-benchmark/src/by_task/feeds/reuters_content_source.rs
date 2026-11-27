@@ -27,7 +27,7 @@ use rucene::error::{LuceneError, Result};
 
 use crate::by_task::feeds::content_items_source::{ContentItemsSource, ContentItemsSourceBase};
 use crate::by_task::feeds::content_source::ContentSource;
-use crate::by_task::feeds::dir_content_source::{read_collection_file, DateFormatInfo};
+use crate::by_task::feeds::dir_content_source::{read_collection_file_sized, DateFormatInfo};
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::utils::config::Config;
 use crate::constants::Constants;
@@ -186,8 +186,13 @@ impl ContentSource for ReutersContentSource {
         };
 
         let name = format!("{}_{}", jdk::real_path_string(&f)?, iteration);
-        let (date_str, title, body_buf) = read_collection_file(&f)?;
-        self.base.add_bytes(std::fs::metadata(&f)?.len() as i64);
+        let (date_str, title, body_buf, size) = read_collection_file_sized(&f)?;
+        // `addBytes(Files.size(f))`: the length just read, when known.
+        let size = match size {
+            Some(size) => size,
+            None => std::fs::metadata(&f)?.len(),
+        };
+        self.base.add_bytes(size as i64);
         let date_str = date_str.ok_or_else(LuceneError::null_pointer)?;
         let dfi = self.get_date_format_info()?;
         let date = jdk::lock(&dfi).parse_date(jdk::java_trim(&date_str))?;
