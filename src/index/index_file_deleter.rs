@@ -395,6 +395,8 @@ impl IndexFileDeleter {
             Arc::new(move |msg_type, msg| log_info(info_stream.as_ref(), msg_type, msg))
         };
         let mut file_deleter = FileDeleter::new(Arc::clone(&directory), Some(messenger));
+        // `logInfo` drops every `MsgType.REF` message (`IndexFileDeleter.java:601-604`).
+        file_deleter.ignore_ref_messages();
 
         // First pass: walk the directory listing and seed the reference counts.
         let mut commits: Vec<Arc<CommitPoint>> = Vec::new();

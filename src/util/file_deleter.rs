@@ -152,6 +152,11 @@ pub struct FileDeleter {
     ref_counts: JavaHashMap<RefCount>,
     directory: Arc<dyn Directory>,
     messenger: Option<Messenger>,
+    /// Whether the messenger reads `MsgType.REF` messages. A messenger that
+    /// drops them, as `IndexFileDeleter.logInfo` does
+    /// (`IndexFileDeleter.java:601-604`), is not handed them, so the text of
+    /// a reference-count message is not built for nothing.
+    ref_messages: bool,
 }
 
 impl std::fmt::Debug for FileDeleter {
@@ -172,7 +177,14 @@ impl FileDeleter {
             ref_counts: JavaHashMap::new(),
             directory,
             messenger,
+            ref_messages: true,
         }
+    }
+
+    /// Declares that the messenger drops every `MsgType.REF` message, so they
+    /// are no longer built.
+    pub(crate) fn ignore_ref_messages(&mut self) {
+        self.ref_messages = false;
     }
 
     /// Reports `message` to the messenger, if one is installed.
@@ -218,7 +230,7 @@ impl FileDeleter {
         // so a failed count assertion follows it.
         // PERF: one lookup, as Java's one `getRefCountInternal(fileName)`.
         let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
-        if let Some(messenger) = &self.messenger {
+        if let Some(messenger) = self.messenger.as_ref().filter(|_| self.ref_messages) {
             messenger(
                 MsgType::Ref,
                 &format!("IncRef \"{file_name}\": pre-incr count is {}", rc.count),
@@ -290,7 +302,7 @@ impl FileDeleter {
     /// tracked, at the count it had.
     fn dec_ref_one(&mut self, file_name: &str) -> Result<bool> {
         let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
-        if let Some(messenger) = &self.messenger {
+        if let Some(messenger) = self.messenger.as_ref().filter(|_| self.ref_messages) {
             messenger(
                 MsgType::Ref,
                 &format!("DecRef \"{file_name}\": pre-decr count is {}", rc.count),
