@@ -574,17 +574,13 @@ impl PartialOrd for BytesRef {
 }
 
 impl Ord for BytesRef {
+    /// `BytesRef.compareTo` (`BytesRef.java:161-169`): `Arrays.compareUnsigned`
+    /// over the two ranges, unsigned bytes first, then length.
+    ///
+    /// PERF: `[u8]`'s own ordering is exactly that one and compares through
+    /// `memcmp`, word-wide, as the JDK intrinsic does, instead of a byte loop.
     fn cmp(&self, other: &Self) -> Ordering {
-        let a = self.slice();
-        let b = other.slice();
-        let len = a.len().min(b.len());
-        for i in 0..len {
-            let ord = a[i].cmp(&b[i]);
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-        a.len().cmp(&b.len())
+        self.slice().cmp(other.slice())
     }
 }
 
@@ -6189,6 +6185,42 @@ pub fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
+
+    /// `BytesRef::cmp` orders as the byte-by-byte unsigned comparison
+    /// followed by the length, for every length pair and difference position,
+    /// including bytes above 0x7F and views at non-zero offsets.
+    #[test]
+    fn bytes_ref_cmp_matches_the_byte_loop() {
+        fn reference(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+            for i in 0..a.len().min(b.len()) {
+                let ord = a[i].cmp(&b[i]);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.len().cmp(&b.len())
+        }
+        for len_a in 0..20usize {
+            for len_b in [0usize, 1, 7, 8, 9, 19] {
+                let a: Vec<u8> = (0..len_a).map(|i| (i * 37 + 200) as u8).collect();
+                let base: Vec<u8> = (0..len_b).map(|i| (i * 37 + 200) as u8).collect();
+                for flip in 0..=len_b {
+                    let mut b = base.clone();
+                    if flip < len_b {
+                        b[flip] = b[flip].wrapping_add(0x81);
+                    }
+                    let mut padded = vec![0x55u8; 3];
+                    padded.extend_from_slice(&b);
+                    let ra = BytesRef::new(a.clone());
+                    let mut rb = BytesRef::new(padded);
+                    rb.offset = 3;
+                    rb.length = b.len();
+                    assert_eq!(ra.cmp(&rb), reference(&a, &b), "{len_a} {len_b} {flip}");
+                    assert_eq!(rb.cmp(&ra), reference(&b, &a), "{len_a} {len_b} {flip}");
+                }
+            }
+        }
+    }
     use std::fs;
     /// `new FixedBitSet(new long[1], 65)` throws Java's
     /// `IllegalArgumentException` (`FixedBitSet.java:162-167`). Measured
