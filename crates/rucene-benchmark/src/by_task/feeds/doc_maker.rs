@@ -317,6 +317,24 @@ impl DocState {
         f(&field)
     }
 
+    /// [`with_field`](Self::with_field) with the field type built only when
+    /// the field is: Java builds `ft` before `getField`, which ignores it for
+    /// a reused field, so building it is unobservable there.
+    fn with_field_lazy_type<R>(
+        &mut self,
+        name: &str,
+        ft: impl FnOnce() -> Result<Arc<FieldType>>,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.fields.as_ref().expect("reuseFields").get(name) {
+                return f(field);
+            }
+        }
+        let field = self.get_field(name, &ft()?)?;
+        f(&field)
+    }
+
     /// [`with_field`](Self::with_field) for
     /// [`get_numeric_field`](Self::get_numeric_field).
     fn with_numeric_field<R>(
@@ -547,9 +565,6 @@ impl DocMaker {
         doc.clear();
 
         // Set ID_FIELD
-        let ft = FieldType::new_from(&*val_type);
-        ft.set_stored(true)?;
-        let id_ft = Arc::new(ft);
         let id = {
             let mut s = self.settings();
             let limit = s.update_doc_id_limit;
@@ -565,7 +580,15 @@ impl DocMaker {
                 }
             }
         };
-        ds.with_field(Self::ID_FIELD, &id_ft, |id_field| {
+        // `FieldType ft = new FieldType(valType); ft.setStored(true);`
+        // (`DocMaker.java:226-229`), built when the field is.
+        // PERF: no field type built and dropped per document.
+        let id_ft = || {
+            let ft = FieldType::new_from(&*val_type);
+            ft.set_stored(true)?;
+            Ok(Arc::new(ft))
+        };
+        ds.with_field_lazy_type(Self::ID_FIELD, id_ft, |id_field| {
             id_field.set_string_value(id.to_string())?;
             doc.add_shared(id_field.indexable());
             Ok(())

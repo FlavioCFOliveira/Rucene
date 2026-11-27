@@ -238,6 +238,38 @@ impl DirContentSource {
     }
 }
 
+/// The lines `BufferedReader.readLine()` returns over a whole text
+/// (as `jdk::io::BufferedReader::read_line` reads them): a line ends at `\n`, `\r` or `\r\n`,
+/// which it does not include, and a last line with no terminator is a line
+/// unless it is empty.
+struct JavaLines<'a>(&'a str);
+
+impl<'a> std::iter::Iterator for JavaLines<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        let rest = self.0;
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.find(['\n', '\r']) {
+            Some(end) => {
+                let skip = if rest[end..].starts_with("\r\n") {
+                    2
+                } else {
+                    1
+                };
+                self.0 = &rest[end + skip..];
+                Some(&rest[..end])
+            }
+            None => {
+                self.0 = "";
+                Some(rest)
+            }
+        }
+    }
+}
+
 /// Reads a Reuters/Dir collection file: first line is the date, 3rd is the
 /// title, rest is body (each line followed by a space).
 ///
@@ -246,6 +278,25 @@ impl DirContentSource {
 // as Java's `StringBuilder` does, instead of a `String` per line that
 // `DocData::set_body` then re-encoded (rmp #679).
 pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<String>, Vec<u16>)> {
+    // PERF: the file is read in one call and, when it is valid UTF-8 (what
+    // `Files.newBufferedReader(f, UTF_8)` decodes without a
+    // `MalformedInputException`), split into `readLine()`'s lines in place,
+    // with no per-line buffer. Invalid input takes the reader below, which
+    // raises Java's exception where Java raises it.
+    let bytes = std::fs::read(f)?;
+    if let Ok(text) = std::str::from_utf8(&bytes) {
+        let mut lines = JavaLines(text);
+        let date_str = lines.next().map(str::to_string);
+        lines.next(); // skip an empty line
+        let title = lines.next().map(str::to_string);
+        lines.next(); // skip an empty line
+        let mut body_buf: Vec<u16> = Vec::with_capacity(1024.max(text.len()));
+        for line in lines {
+            body_buf.extend(line.encode_utf16());
+            body_buf.push(u16::from(b' '));
+        }
+        return Ok((date_str, title, body_buf));
+    }
     let mut reader = jdk::new_buffered_reader_utf8(f)?;
     let result = (|| -> Result<(Option<String>, Option<String>, Vec<u16>)> {
         let date_str = jdk::read_line(&mut reader)?;
@@ -350,5 +401,43 @@ impl ContentSource for DirContentSource {
         doc_data.set_title(title);
         doc_data.set_date_from(date.as_ref());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod java_lines_tests {
+    use super::JavaLines;
+    use rucene_analysis_common::jdk::io::{BufferedReader, CodingErrorAction, InputStreamReader};
+
+    /// `JavaLines` splits a text into exactly the lines `readLine()` returns
+    /// for it, terminators (`\n`, `\r`, `\r\n`), empty lines, a last line
+    /// with or without terminator, and non-ASCII text included.
+    #[test]
+    fn java_lines_match_buffered_reader_read_line() {
+        let texts = [
+            "",
+            "\n",
+            "\r",
+            "\r\n",
+            "a",
+            "a\n",
+            "a\r\nb",
+            "a\rb\nc\r\n",
+            "\n\nx\n\n",
+            "26-FEB-1987 15:01:01.79\n\nTitle line\n\nBody one\nBody two\r\n\r\nlast",
+            "caf\u{e9}\r\r\n\u{1F600} \u{4e2d}\u{6587}\n",
+        ];
+        for text in texts {
+            let mut reader = BufferedReader::new(InputStreamReader::with_action(
+                std::io::Cursor::new(text.as_bytes().to_vec()),
+                CodingErrorAction::Report,
+            ));
+            let mut expected = Vec::new();
+            while let Some(line) = reader.read_line().unwrap() {
+                expected.push(String::from_utf16(&line).unwrap());
+            }
+            let actual: Vec<String> = JavaLines(text).map(str::to_string).collect();
+            assert_eq!(actual, expected, "{text:?}");
+        }
     }
 }
