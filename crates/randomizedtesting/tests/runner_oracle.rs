@@ -793,12 +793,12 @@ static LEAK_RANDOMIZED_SLEEP: LazyLock<Arc<Class>> = LazyLock::new(|| {
                 let r = std::panic::catch_unwind(|| loop {
                     RandomizedTest::sleep(1000)
                 });
-                if let Err(p) = r {
-                    log(format!(
-                        "thread leaked-randomized-sleep ended by {}",
-                        Throwable::from_panic(p)
-                    ));
-                }
+                // The loop never ends, so only a panic leaves it.
+                let Err(p) = r;
+                log(format!(
+                    "thread leaked-randomized-sleep ended by {}",
+                    Throwable::from_panic(p)
+                ));
             })
             .start()
         }))

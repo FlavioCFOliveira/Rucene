@@ -1463,9 +1463,12 @@ impl MSBRadixSorter {
         k: usize,
     ) -> usize {
         let mut common_prefix_length = self.common_prefix.len().min(self.max_length - k);
-        for j in 0..common_prefix_length {
+        for (j, slot) in self.common_prefix[..common_prefix_length]
+            .iter_mut()
+            .enumerate()
+        {
             let b = ops.byte_at(from, k + j);
-            self.common_prefix[j] = b;
+            *slot = b;
             if b == -1 {
                 common_prefix_length = j + 1;
                 break;

@@ -419,8 +419,7 @@ pub fn assert_same_scores_filtered(
     // `ArrayIndexOutOfBoundsException` when `td2` is shorter); `10e-5` is a
     // `double`, so the overload is `assertEquals(double, double, double)`
     // over the widened scores.
-    for i in 0..td1.score_docs.len() {
-        let a = &td1.score_docs[i];
+    for (i, a) in td1.score_docs.iter().enumerate() {
         let b = td2.score_docs.get(i).unwrap_or_else(|| {
             randomizedtesting::jdk::exception::throw(
                 "java.lang.ArrayIndexOutOfBoundsException",

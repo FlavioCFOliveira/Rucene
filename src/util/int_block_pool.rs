@@ -207,9 +207,9 @@ impl IntBlockPool {
             let buffer_upto = self.buffer_upto as usize;
 
             if zero_fill_buffers {
-                for i in 0..buffer_upto {
+                for buffer in &mut self.buffers[..buffer_upto] {
                     // Fully zero-fill the blocks that were fully used.
-                    if let Some(buf) = self.buffers[i].as_mut() {
+                    if let Some(buf) = buffer.as_mut() {
                         buf.iter_mut().for_each(|v| *v = 0);
                     }
                 }

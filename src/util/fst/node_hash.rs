@@ -285,8 +285,7 @@ impl<O: Outputs> NodeHash<O> {
 /// identical to [`PagedGrowableHash::hash`], the frozen case.
 fn hash_uncompiled_node<O: Outputs>(outputs: &O, node: &UnCompiledNode<O::Output>) -> i64 {
     let mut h: i64 = 0;
-    for arc_idx in 0..node.num_arcs {
-        let arc = &node.arcs[arc_idx];
+    for arc in &node.arcs[..node.num_arcs] {
         h = PRIME.wrapping_mul(h).wrapping_add(i64::from(arc.label));
         let n = arc.target;
         h = PRIME

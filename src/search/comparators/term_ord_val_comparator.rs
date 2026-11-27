@@ -759,6 +759,10 @@ fn init_postings(
                     "Terms have more than {ord} unique terms while doc values have exactly {ord} terms"
                 )));
             };
+            // `next` is read only by the `assert` below, which is compiled
+            // only with debug assertions.
+            #[cfg(not(debug_assertions))]
+            let _ = &next;
             // `assert docValuesTerms.seekExact(next) && docValuesTerms.ord() == ord;`
             #[cfg(debug_assertions)]
             {

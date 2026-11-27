@@ -345,8 +345,8 @@ impl fmt::Display for Stats {
         }
         writeln!(f)?;
         let mut compression_counts = String::new();
-        for code in 0..self.compression_algorithms.len() {
-            if self.compression_algorithms[code] == 0 {
+        for (code, &count) in self.compression_algorithms.iter().enumerate() {
+            if count == 0 {
                 continue;
             }
             if !compression_counts.is_empty() {
@@ -354,10 +354,7 @@ impl fmt::Display for Stats {
             }
             let algorithm = CompressionAlgorithm::by_code(code as i32)
                 .expect("INVARIANT: compression_algorithms has one slot per algorithm code");
-            compression_counts.push_str(&format!(
-                "{algorithm}: {}",
-                self.compression_algorithms[code]
-            ));
+            compression_counts.push_str(&format!("{algorithm}: {count}"));
         }
         write!(
             f,
@@ -820,12 +817,12 @@ impl TrieBuilder {
             "{child_save_strategy:?} strategy bytes compute error"
         );
 
-        for i in 0..children_num {
+        for &child_fp in &node.child_fps[..children_num] {
             debug_assert!(
-                bottom_fp > node.child_fps[i],
+                bottom_fp > child_fp,
                 "parent always written after all children"
             );
-            Self::write_long_n_bytes(index, bottom_fp - node.child_fps[i], children_fp_bytes)?;
+            Self::write_long_n_bytes(index, bottom_fp - child_fp, children_fp_bytes)?;
         }
 
         if let Some(floor_data) = node.output.as_ref().and_then(|o| o.floor_data.as_ref()) {

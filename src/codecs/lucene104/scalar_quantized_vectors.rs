@@ -3459,7 +3459,6 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// Equivalent to
     /// `org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsWriter#writeSortingField`.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn write_sorting_field(
         &self,
         vectors: &mut [Vec<f32>],
@@ -3505,7 +3504,6 @@ impl Lucene104ScalarQuantizedVectorsWriter {
     /// Writes one field's entry into the metadata file.
     ///
     /// Equivalent to `Lucene104ScalarQuantizedVectorsWriter.writeMeta`.
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     pub fn write_meta(
         &self,

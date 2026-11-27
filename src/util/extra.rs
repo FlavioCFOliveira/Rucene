@@ -193,8 +193,8 @@ impl LongBitSet {
     }
 
     fn verify_ghost_bits_clear(&self) -> bool {
-        for i in (self.num_words as usize)..self.bits.len() {
-            if self.bits[i] != 0 {
+        for &word in &self.bits[(self.num_words as usize)..] {
+            if word != 0 {
                 return false;
             }
         }
@@ -220,8 +220,8 @@ impl LongBitSet {
     /// Returns the number of set bits.
     pub fn cardinality(&self) -> i64 {
         let mut total = 0i64;
-        for i in 0..(self.num_words as usize) {
-            total += (self.bits[i] as u64).count_ones() as i64;
+        for &word in &self.bits[..(self.num_words as usize)] {
+            total += (word as u64).count_ones() as i64;
         }
         total
     }
@@ -435,8 +435,8 @@ impl LongBitSet {
 
     /// Scans the backing store to check if all bits are clear.
     pub fn scan_is_empty(&self) -> bool {
-        for i in 0..(self.num_words as usize) {
-            if self.bits[i] != 0 {
+        for &word in &self.bits[..(self.num_words as usize)] {
+            if word != 0 {
                 return false;
             }
         }
@@ -462,8 +462,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] ^= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = !self.bits[i];
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = !*word;
         }
         self.bits[end_word] ^= end_mask as i64;
     }
@@ -512,8 +512,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] |= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = !0i64;
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = !0i64;
         }
         self.bits[end_word] |= end_mask as i64;
     }
@@ -548,8 +548,8 @@ impl LongBitSet {
             return;
         }
         self.bits[start_word] &= start_mask as i64;
-        for i in (start_word + 1)..end_word {
-            self.bits[i] = 0;
+        for word in &mut self.bits[(start_word + 1)..end_word] {
+            *word = 0;
         }
         self.bits[end_word] &= end_mask as i64;
     }

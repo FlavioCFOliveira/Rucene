@@ -765,15 +765,12 @@ impl Hunspell {
                 return false;
             }
         }
-        if self.dictionary.check_compound_triple
+        // Java's `if (...) { if (...) { return false; } } return true;`.
+        !(self.dictionary.check_compound_triple
             && chars[break_pos - 1] == chars[break_pos]
             && (break_pos > offset + 1 && chars[break_pos - 2] == chars[break_pos - 1]
                 || (break_pos as i64) < length as i64 - 1
-                    && chars[break_pos] == chars[break_pos + 1])
-        {
-            return false;
-        }
-        true
+                    && chars[break_pos] == chars[break_pos + 1]))
     }
 
     /// Equivalent to `checkCompoundRules(char[], int, int, List<IntsRef>)`.

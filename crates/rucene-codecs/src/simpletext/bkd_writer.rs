@@ -884,11 +884,14 @@ impl SimpleTextBKDWriter {
             let first = reader.value(from as i32).into_owned();
             for i in from + 1..to {
                 let value = reader.value(i as i32);
-                for dim in 0..num_dims {
+                for (dim, common_prefix_length) in self.common_prefix_lengths[..num_dims]
+                    .iter_mut()
+                    .enumerate()
+                {
                     let offset = dim * bytes_per_dim;
-                    for j in 0..self.common_prefix_lengths[dim] {
+                    for j in 0..*common_prefix_length {
                         if first[offset + j] != value[offset + j] {
-                            self.common_prefix_lengths[dim] = j;
+                            *common_prefix_length = j;
                             break;
                         }
                     }

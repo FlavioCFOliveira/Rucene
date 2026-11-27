@@ -345,8 +345,7 @@ impl<'a> AbstractBlockPackedWriterOps<'a> for MonotonicBlockPackedWriter<'a> {
         };
         let mut min = self.base.values[0];
         // adjust min so that all deltas will be positive
-        for i in 1..off {
-            let actual = self.base.values[i];
+        for (i, &actual) in self.base.values[..off].iter().enumerate().skip(1) {
             let predicted = expected(min, avg, i as i32);
             if predicted > actual {
                 min = min.wrapping_sub(predicted.wrapping_sub(actual));
@@ -354,9 +353,9 @@ impl<'a> AbstractBlockPackedWriterOps<'a> for MonotonicBlockPackedWriter<'a> {
         }
 
         let mut max_delta = 0i64;
-        for i in 0..off {
-            self.base.values[i] = self.base.values[i].wrapping_sub(expected(min, avg, i as i32));
-            max_delta = std::cmp::max(max_delta, self.base.values[i]);
+        for (i, value) in self.base.values[..off].iter_mut().enumerate() {
+            *value = value.wrapping_sub(expected(min, avg, i as i32));
+            max_delta = std::cmp::max(max_delta, *value);
         }
 
         self.base.out.write_z_long(min)?;

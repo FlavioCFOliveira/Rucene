@@ -2,7 +2,7 @@
 name = "rucene-analysis-common"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.95"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of Apache Lucene 10.5.0 lucene/analysis/common (analyzers, tokenizers, token filters and char filters)."
