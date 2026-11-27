@@ -13,8 +13,9 @@ an `rmp` task or sprint of the `rucene` roadmap.
 ## [0.2.0] - 2026-11-27
 
 Second release. It covers the 97 commits of `develop` from `v0.1.0` to
-`070015e6`: sprints 17, 18, 19 and 20 of the `rucene` roadmap. Every
-non-merge commit names the `rmp` task it serves.
+`070015e6` (sprints 17, 18, 19 and 20 of the `rucene` roadmap; every
+non-merge commit names the `rmp` task it serves) and the release fixes on
+`release/0.2.0` (`0306398d`).
 
 Release notes: [`docs/releases/0.2.0.md`](docs/releases/0.2.0.md).
 
@@ -104,6 +105,12 @@ file keeps its upstream copyright and licence notice (`NOTICE`).
 
 ### Changed — breaking changes to the `rucene` API
 
+* **Minimum supported Rust version 1.100** (was 1.89) in every manifest, by
+  user decision. The technical minimum is 1.95.0, the first release where the
+  code compiles: it uses `if let` guards on match arms, stable since Rust
+  1.95.0 (rust-lang/rust `RELEASES.md`, PR #141295); `f4a54f53` introduced
+  them. 1.100 is a policy choice above that minimum: every release gate ran on
+  rustc 1.100.0 (2026-11-09). **Migration:** build with Rust 1.100 or later.
 * **`LuceneError` is one pointer wide**: `pub struct LuceneError(Box<LuceneErrorInner>)`,
   which dereferences to `LuceneErrorInner` (`kind`, `suppressed`, …). A struct
   pattern `LuceneError { kind: …, .. }` no longer compiles. **Migration:**
@@ -167,6 +174,12 @@ seven of them include the `rucene-benchmark` harness in their scope).
   and `highlights` 0.64, and the `Warm` operation 0.42. Three take more:
   `collector` about 1.16, `sort-standard` about 1.11, `sloppy-phrase` about
   1.07. See [Known limitations](#known-limitations).
+* **These figures predate a release fix.** They were measured at `2c4f248c`,
+  before `0306398d` removed the batch `collect_stream` path of
+  `BooleanScorer::score_window_single_scorer` (see [Fixed](#fixed)). That
+  path was part of `49502b4b`, which reported −4.0 % instructions on
+  `standard` search for the whole commit; the share given back by the
+  removal was not measured, and no figure was re-measured after it.
 * **Build target:** on x86-64 Linux, `.cargo/config.toml` builds the workspace
   for `target-cpu=x86-64-v3` (AVX2, FMA, BMI2). Builds of this workspace,
   tests included, therefore require such a CPU; a crate that depends on
@@ -183,6 +196,14 @@ seven of them include the `rucene-benchmark` harness in their scope).
 
 ### Fixed
 
+* `BooleanScorer::score_window_single_scorer` collects one document at a
+  time again, as Lucene does (`BooleanScorer.java:284-289`). The batch
+  `collect_stream` path that `49502b4b` added for the no-score case drew one
+  extra `rarely()` from the test framework's random source, which shifted
+  every later draw: `search_wrappers_match_lucene` (37 of 1168 rows) and
+  `test_geo_point_suite_draws_match_lucene` (7 of 132 rows) diverged from
+  Lucene. `src/search/boolean_scorer.rs` is back to its state before
+  `49502b4b` (`0306398d`).
 * `%f` in the similarities' explanations is rounded as JDK 25 rounds it
   (1130 of 8025 `double` and 1104 of 12028 `float` rows differed): #657
   (`7c2d0766`).
@@ -204,6 +225,7 @@ seven of them include the `rucene-benchmark` harness in their scope).
 
 * `tools/kg`, the Python Knowledge Graph chain, replaced by `tools/kgsync`:
   #658 (`4ff33119`).
+* The unused `tokio` dependency of `rucene` (`0306398d`).
 
 ### Known limitations
 

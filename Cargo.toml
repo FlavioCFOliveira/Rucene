@@ -2,7 +2,7 @@
 name = "rucene"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "A Rust port of Apache Lucene Core 10.5.0 with functional parity and index-file compatibility."

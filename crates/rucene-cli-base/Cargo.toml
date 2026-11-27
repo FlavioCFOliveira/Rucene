@@ -2,7 +2,7 @@
 name = "rucene-cli-base"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Command-line example that manages one rucene index per Portal BASE (Portuguese public procurement) entity, with pt-PT accent-insensitive search."

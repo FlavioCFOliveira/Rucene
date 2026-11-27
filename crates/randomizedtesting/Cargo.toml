@@ -2,7 +2,7 @@
 name = "randomizedtesting"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of randomizedtesting 2.8.1 (com.carrotsearch.randomizedtesting), the runner of Apache Lucene's tests."

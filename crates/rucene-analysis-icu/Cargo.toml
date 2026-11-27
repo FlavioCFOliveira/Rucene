@@ -2,7 +2,7 @@
 name = "rucene-analysis-icu"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of Apache Lucene 10.5.0 lucene/analysis/icu (analysis integration with ICU: normalization, folding, segmentation, transforms and collation)."

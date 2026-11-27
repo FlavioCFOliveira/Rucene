@@ -24,7 +24,7 @@ The project pursues two dimensions of parity, whenever technically feasible:
 
 | Topic | Decision |
 |-------|----------|
-| Rust edition / MSRV | 2021 / 1.89+ |
+| Rust edition / MSRV | 2021 / 1.100+ |
 | Crate structure | Single crate with Cargo features per module |
 | API style | Mirror Java Lucene class/method names and organization as closely as idiomatic Rust permits |
 | Async model | Public API is fully async with `tokio`; backpressure and cancellation required from the start |

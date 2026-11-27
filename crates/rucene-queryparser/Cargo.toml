@@ -2,7 +2,7 @@
 name = "rucene-queryparser"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Rust port of Apache Lucene 10.5.0 lucene/queryparser (classic, flexible, simple, surround, complex-phrase, extendable and XML query parsers)."

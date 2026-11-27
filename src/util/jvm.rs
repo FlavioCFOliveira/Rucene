@@ -461,8 +461,8 @@ impl X86Cpu {
 fn cpuid(leaf: u32) -> std::arch::x86_64::CpuidResult {
     // SAFETY: every x86_64 processor implements CPUID, and leaves 0 and 1
     // are defined on all of them; the intrinsic has no other precondition
-    // (it is a safe function in recent Rust releases, unsafe at the 1.89
-    // MSRV, hence `unused_unsafe`).
+    // (it is a safe function at the 1.100 MSRV, and was unsafe in older
+    // releases such as 1.89, hence `unused_unsafe`).
     unsafe { std::arch::x86_64::__cpuid(leaf) }
 }
 

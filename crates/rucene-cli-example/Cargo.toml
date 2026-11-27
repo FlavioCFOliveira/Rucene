@@ -2,7 +2,7 @@
 name = "rucene-cli-example"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.95"
+rust-version = "1.100"
 authors = ["Flavio CF Oliveira"]
 license = "MIT"
 description = "Command-line example that indexes and searches the USGS earthquake catalog with rucene."
