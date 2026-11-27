@@ -551,7 +551,9 @@ impl SegmentInfos {
             }
         }
         for info in &self.segments {
-            files.extend(info.files_ordered()?);
+            // PERF: the names keep the hashes their set computed, as Java's
+            // `files.addAll(info.files())` reads each `String`'s cached hash.
+            files.extend_from_set(info.files_ordered()?);
         }
         Ok(files)
     }

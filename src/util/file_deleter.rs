@@ -216,11 +216,15 @@ impl FileDeleter {
     pub fn inc_ref(&mut self, file_name: &str) {
         // `FileDeleter.java:83-89`: the message goes out before `rc.incRef()`,
         // so a failed count assertion follows it.
-        let pre = Self::ref_count_internal(&mut self.ref_counts, file_name).count;
-        self.message(MsgType::Ref, || {
-            format!("IncRef \"{file_name}\": pre-incr count is {pre}")
-        });
-        Self::ref_count_internal(&mut self.ref_counts, file_name).inc_ref(file_name);
+        // PERF: one lookup, as Java's one `getRefCountInternal(fileName)`.
+        let rc = Self::ref_count_internal(&mut self.ref_counts, file_name);
+        if let Some(messenger) = &self.messenger {
+            messenger(
+                MsgType::Ref,
+                &format!("IncRef \"{file_name}\": pre-incr count is {}", rc.count),
+            );
+        }
+        rc.inc_ref(file_name);
     }
 
     /// Decrements the reference count of every file in `file_names`, deleting

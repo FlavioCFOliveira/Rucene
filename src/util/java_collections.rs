@@ -103,6 +103,14 @@ pub const MIN_TREEIFY_CAPACITY: usize = 64;
 /// where one `char` is two code units.
 pub fn java_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
+    // PERF: an ASCII string's UTF-16 units are its bytes, so they are read
+    // directly, without decoding the UTF-8.
+    if s.is_ascii() {
+        for &byte in s.as_bytes() {
+            h = h.wrapping_mul(31).wrapping_add(i32::from(byte));
+        }
+        return h;
+    }
     for unit in s.encode_utf16() {
         h = h.wrapping_mul(31).wrapping_add(i32::from(unit));
     }
@@ -328,10 +336,19 @@ impl<V, K: Borrow<str>> JavaHashMap<V, K> {
 
     /// `HashMap.put(K, V)`, returning the previous value as Java does.
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let hash = spread(key_str(&key));
+        self.insert_with_hash(hash, key, value)
+    }
+
+    /// [`insert`](Self::insert) for a key whose `hash(key)` is already known:
+    /// the hash this or another map stored for the same characters. Java's
+    /// `String` caches its `hashCode()`, so `put` of a key already in a map
+    /// recomputes nothing; this is that path.
+    pub(crate) fn insert_with_hash(&mut self, hash: i32, key: K, value: V) -> Option<V> {
+        debug_assert_eq!(hash, spread(key_str(&key)));
         if self.table.is_empty() {
             self.resize();
         }
-        let hash = spread(key_str(&key));
         let n = self.table.len();
         let index = index_for(hash, n);
         let bucket = &mut self.table[index];
@@ -702,6 +719,21 @@ impl<V, K> JavaHashMap<V, K> {
         self.table
             .into_iter()
             .flat_map(|bucket| bucket.into_iter().map(|e| e.key))
+    }
+
+    /// The keys in `keySet()` order, each with its stored `hash(key)`.
+    pub(crate) fn hashed_keys(&self) -> impl Iterator<Item = (i32, &K)> {
+        self.table
+            .iter()
+            .flat_map(|bucket| bucket.iter().map(|e| (e.hash, &e.key)))
+    }
+
+    /// Consumes the map, yielding its keys in `keySet()` order, each with
+    /// its stored `hash(key)`.
+    pub(crate) fn into_hashed_keys(self) -> impl Iterator<Item = (i32, K)> {
+        self.table
+            .into_iter()
+            .flat_map(|bucket| bucket.into_iter().map(|e| (e.hash, e.key)))
     }
 }
 
@@ -2068,10 +2100,21 @@ impl<K: Borrow<str>> JavaHashSet<K> {
         K: Clone,
     {
         let mut set = Self::sized_for_collection(source.len());
-        for value in source.iter() {
-            set.insert(value.clone());
+        // PERF: each element's stored hash is reused, as Java's `add` reads
+        // the `String`'s cached `hashCode()`.
+        for (hash, value) in source.map.hashed_keys() {
+            set.map.insert_with_hash(hash, value.clone(), ());
         }
         set
+    }
+
+    /// `addAll(other)` for a set that is consumed: each element added in
+    /// `other`'s iteration order, with its stored hash reused (Java's
+    /// `String` caches its `hashCode()`).
+    pub(crate) fn extend_from_set(&mut self, other: JavaHashSet<K>) {
+        for (hash, value) in other.map.into_hashed_keys() {
+            self.map.insert_with_hash(hash, value, ());
+        }
     }
 
     /// The empty set `new HashSet<>(Collection)` starts from for a
