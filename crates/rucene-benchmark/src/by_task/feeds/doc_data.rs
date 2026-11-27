@@ -24,6 +24,102 @@ use rucene_queryparser::jdk::date::Date;
 use crate::jdk;
 use crate::jdk::properties::Properties;
 
+/// A Java String set on a [`DocData`]: Rust text, or UTF-16 code units.
+///
+/// PERF: a source that sets Rust text (`LongToEnglishContentSource`, every
+/// parser of `String`s) keeps it as it is, and its UTF-16 units are made only
+/// for a caller that reads them, once; the indexing path reads the text, so
+/// it is never encoded to UTF-16 and back.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct JavaText {
+    /// The text as set, when it was set as Rust text.
+    text: Option<String>,
+    /// The UTF-16 code units: as set, or made from `text` on first read.
+    units: std::sync::OnceLock<Vec<u16>>,
+}
+
+impl JavaText {
+    fn from_text(text: String) -> Self {
+        Self {
+            text: Some(text),
+            units: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn from_units(units: Vec<u16>) -> Self {
+        Self {
+            text: None,
+            units: std::sync::OnceLock::from(units),
+        }
+    }
+
+    /// The UTF-16 code units.
+    fn units(&self) -> &[u16] {
+        self.units.get_or_init(|| {
+            self.text
+                .as_deref()
+                .unwrap_or_default()
+                .encode_utf16()
+                .collect()
+        })
+    }
+
+    /// The text converted to UTF-8 as `UnicodeUtil.UTF16toUTF8` converts it.
+    fn to_text(&self) -> String {
+        match &self.text {
+            Some(text) => text.clone(),
+            None => jdk::utf16_to_string(self.units()),
+        }
+    }
+
+    /// The UTF-16 code units, taken.
+    fn into_units(mut self) -> Vec<u16> {
+        match self.units.take() {
+            Some(units) => units,
+            None => self.text.unwrap_or_default().encode_utf16().collect(),
+        }
+    }
+
+    /// The Rust text when the string was set as one, else `None`.
+    pub(crate) fn text(&self) -> Option<&str> {
+        self.text.as_deref()
+    }
+
+    /// The text taken: as set when it was set as Rust text, else converted
+    /// from the UTF-16 units as `UnicodeUtil.UTF16toUTF8` converts them.
+    pub(crate) fn into_text(self) -> String {
+        match self.text {
+            Some(text) => text,
+            None => jdk::utf16_to_string(self.units()),
+        }
+    }
+
+    /// Whether the string is empty, `isEmpty()`.
+    pub(crate) fn is_empty(&self) -> bool {
+        match (&self.text, self.units.get()) {
+            (_, Some(units)) => units.is_empty(),
+            (Some(text), None) => text.is_empty(),
+            (None, None) => true,
+        }
+    }
+
+    /// Whether `String.length()`, in UTF-16 code units, is at most `n`.
+    /// Text of at most `n` bytes is (a UTF-8 byte sequence is never shorter
+    /// than its UTF-16 units); longer text is encoded, once, to count.
+    pub(crate) fn utf16_len_at_most(&self, n: usize) -> bool {
+        match (&self.text, self.units.get()) {
+            (_, Some(units)) => units.len() <= n,
+            (Some(text), None) if text.len() <= n => true,
+            _ => self.units().len() <= n,
+        }
+    }
+
+    /// The UTF-16 code units, taken.
+    pub(crate) fn take_units(self) -> Vec<u16> {
+        self.into_units()
+    }
+}
+
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.DocData`: output
 /// of parsing (e.g. HTML parsing) of an input document.
 ///
@@ -35,8 +131,8 @@ use crate::jdk::properties::Properties;
 #[derive(Clone, Debug, Default)]
 pub struct DocData {
     name: Option<String>,
-    body: Option<Vec<u16>>,
-    title: Option<Vec<u16>>,
+    body: Option<JavaText>,
+    title: Option<JavaText>,
     date: Option<String>,
     id: i32,
     props: Option<Properties>,
@@ -60,13 +156,13 @@ impl DocData {
 
     /// `getBody()`: the Java String as UTF-16 code units.
     pub fn get_body(&self) -> Option<&[u16]> {
-        self.body.as_deref()
+        self.body.as_ref().map(JavaText::units)
     }
 
     /// `getBody()` converted to UTF-8 by `UnicodeUtil.UTF16toUTF8` (an
     /// unpaired surrogate becomes U+FFFD), for consumers that take Rust text.
     pub fn get_body_string(&self) -> Option<String> {
-        self.body.as_deref().map(jdk::utf16_to_string)
+        self.body.as_ref().map(JavaText::to_text)
     }
 
     /// `getDate()`: the date. If the setter with a `Date` was called, then
@@ -94,29 +190,39 @@ impl DocData {
 
     /// `getTitle()`: the Java String as UTF-16 code units.
     pub fn get_title(&self) -> Option<&[u16]> {
-        self.title.as_deref()
+        self.title.as_ref().map(JavaText::units)
     }
 
     /// `getTitle()` converted to UTF-8 by `UnicodeUtil.UTF16toUTF8` (an
     /// unpaired surrogate becomes U+FFFD), for consumers that take Rust text.
     pub fn get_title_string(&self) -> Option<String> {
-        self.title.as_deref().map(jdk::utf16_to_string)
+        self.title.as_ref().map(JavaText::to_text)
     }
 
     /// `setBody(String)` with Rust text.
     pub fn set_body(&mut self, body: Option<String>) {
-        self.body = body.map(|b| b.encode_utf16().collect());
+        self.body = body.map(JavaText::from_text);
     }
 
     /// `setBody(String)` with a Java String held as UTF-16 code units.
     pub fn set_body_utf16(&mut self, body: Option<Vec<u16>>) {
-        self.body = body;
+        self.body = body.map(JavaText::from_units);
     }
 
     /// Moves the body out, leaving `None`, for a caller that replaces it
     /// right after (`DocMaker.createDocument`'s `docData.setBody(...)`).
     pub(crate) fn take_body_utf16(&mut self) -> Option<Vec<u16>> {
+        self.body.take().map(JavaText::into_units)
+    }
+
+    /// Moves the body out as it was set, leaving `None`.
+    pub(crate) fn take_body(&mut self) -> Option<JavaText> {
         self.body.take()
+    }
+
+    /// The body as set, or `None` for a `null` body.
+    pub(crate) fn body(&self) -> Option<&JavaText> {
+        self.body.as_ref()
     }
 
     /// `setDate(Date)`.
@@ -152,11 +258,11 @@ impl DocData {
 
     /// `setTitle(String)` with Rust text.
     pub fn set_title(&mut self, title: Option<String>) {
-        self.title = title.map(|t| t.encode_utf16().collect());
+        self.title = title.map(JavaText::from_text);
     }
 
     /// `setTitle(String)` with a Java String held as UTF-16 code units.
     pub fn set_title_utf16(&mut self, title: Option<Vec<u16>>) {
-        self.title = title;
+        self.title = title.map(JavaText::from_units);
     }
 }

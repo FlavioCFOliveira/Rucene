@@ -667,30 +667,58 @@ impl DocMaker {
             Ok(())
         })?;
 
-        if doc_data.get_body().is_some_and(|b| !b.is_empty()) {
+        // `body != null && body.length() > 0`, then `size <= 0 || size >=
+        // body.length()`.
+        let body_present = doc_data.body().is_some_and(|body| !body.is_empty());
+        let use_all = body_present
+            && (size <= 0
+                || doc_data
+                    .body()
+                    .is_some_and(|body| body.utf16_len_at_most(size as usize)));
+        if use_all {
+            // use all: `body` itself, which leaves nothing (`DocMaker.java:296-299`).
+            // PERF: a body set as Rust text is used as it is, with no round
+            // trip through UTF-16 (see `DocData`'s `JavaText`).
+            let body = doc_data
+                .take_body()
+                .expect("INVARIANT: checked non-empty above");
+            doc_data.set_body_utf16(Some(Vec::new())); // nothing left
+            let stored_bytes = store_bytes.then(|| match body.text() {
+                // `String.getBytes(UTF_8)` of text that holds no lone
+                // surrogate is its UTF-8.
+                Some(text) => text.as_bytes().to_vec(),
+                None => jdk::string_get_bytes_utf8(&body.clone().take_units()),
+            });
+            let text = body.into_text();
+            ds.with_field(Self::BODY_FIELD, &body_val_type, |body_field| {
+                body_field.set_string_value(text)?;
+                doc.add_shared(body_field.indexable());
+                Ok(())
+            })?;
+            if let Some(stored_bytes) = stored_bytes {
+                let stored = Arc::new(StringField::type_stored().clone());
+                let bytes_field = ds.get_field(Self::BYTES_FIELD, &stored)?;
+                bytes_field.set_bytes_value(&stored_bytes)?;
+                doc.add_shared(bytes_field.indexable());
+            }
+        } else if body_present {
             // PERF: the body is moved out of `doc_data` rather than copied
             // first; the leftover is one copy, as Java's `body.substring(size)`.
             let mut body = doc_data
                 .take_body_utf16()
                 .expect("INVARIANT: checked non-empty above");
-            if size <= 0 || size as usize >= body.len() {
-                // use all
-                doc_data.set_body_utf16(Some(Vec::new())); // nothing left
-            } else {
-                // attempt not to break words - if whitespace found within next 20 chars...
-                let mut n = size - 1;
-                while n < size + 20 && (n as usize) < body.len() {
-                    if rucene_queryparser::jdk::character::is_whitespace(i32::from(
-                        body[n as usize],
-                    )) {
-                        size = n;
-                        break;
-                    }
-                    n += 1;
+            // `0 < size < body.length()`: attempt not to break words - if
+            // whitespace found within next 20 chars...
+            let mut n = size - 1;
+            while n < size + 20 && (n as usize) < body.len() {
+                if rucene_queryparser::jdk::character::is_whitespace(i32::from(body[n as usize])) {
+                    size = n;
+                    break;
                 }
-                let left = body.split_off(size as usize); // use part
-                doc_data.set_body_utf16(Some(left)); // some left
+                n += 1;
             }
+            let left = body.split_off(size as usize); // use part
+            doc_data.set_body_utf16(Some(left)); // some left
             let bdy: &[u16] = &body;
             ds.with_field(Self::BODY_FIELD, &body_val_type, |body_field| {
                 body_field.set_string_value(jdk::utf16_to_string(bdy))?;
