@@ -305,6 +305,67 @@ impl<V> CharArrayMap<V> {
         self.values[slot].as_ref()
     }
 
+    /// [`contains_key_chars`](Self::contains_key_chars) for a term held as
+    /// `char`s, or `None` when a `char` lies outside the Basic Multilingual
+    /// Plane.
+    ///
+    /// A BMP `char` is exactly one UTF-16 unit, so the hash, the probe and
+    /// the comparison read the `char`s as the units Java's `char[]` holds
+    /// (`CharArrayMap.java:220-246, 290-315`).
+    ///
+    /// PERF: the term is not first encoded into a UTF-16 buffer.
+    pub(crate) fn contains_key_bmp_chars(&self, text: &[char]) -> Option<bool> {
+        if text.iter().any(|&c| u32::from(c) > 0xFFFF) {
+            return None;
+        }
+        if self.empty_map {
+            return Some(false);
+        }
+        let mut code: i32 = 0;
+        for &c in text {
+            let unit = u32::from(c) as i32;
+            let unit = if self.ignore_case {
+                crate::util::automaton::case_folding::to_lower_case(unit)
+            } else {
+                unit
+            };
+            code = code.wrapping_mul(31).wrapping_add(unit);
+        }
+        let mask = self.keys.len() - 1;
+        let mut pos = (code as u32 as usize) & mask;
+        let inc = ((code >> 8).wrapping_add(code)) | 1;
+        while let Some(key) = self.keys[pos].as_deref() {
+            if self.equals_bmp_chars(text, key) {
+                return Some(self.values[pos].is_some());
+            }
+            code = code.wrapping_add(inc);
+            pos = (code as u32 as usize) & mask;
+        }
+        Some(self.values[pos].is_some())
+    }
+
+    /// [`equals`](Self::equals) for a lookup held as BMP `char`s.
+    fn equals_bmp_chars(&self, text: &[char], key: &[u16]) -> bool {
+        let len = text.len();
+        if len != key.len() {
+            return false;
+        }
+        if self.ignore_case {
+            for (i, &c) in text.iter().enumerate() {
+                if crate::util::automaton::case_folding::to_lower_case(u32::from(c) as i32)
+                    != crate::analysis::character_utils::code_point_at(key, i, len)
+                {
+                    return false;
+                }
+            }
+            true
+        } else {
+            text.iter()
+                .zip(key)
+                .all(|(&c, &unit)| u32::from(c) == u32::from(unit))
+        }
+    }
+
     /// Returns `true` if `key` is present.
     ///
     /// Equivalent to `CharArrayMap.containsKey(CharSequence)`.
@@ -1070,5 +1131,50 @@ mod tests {
         assert_eq!(map.get(""), Some(&"empty"));
         assert!(map.contains_key(""));
         assert_eq!(map.size(), 1);
+    }
+
+    /// The BMP-`char` lookup answers as the UTF-16 lookup does, with and
+    /// without ignore-case, for hits, misses, colliding probes and the empty
+    /// key, and declines (`None`) a term with a supplementary `char`.
+    #[test]
+    fn bmp_char_lookup_agrees_with_the_utf16_lookup() {
+        for ignore_case in [false, true] {
+            let mut map = CharArrayMap::new(4, ignore_case);
+            for key in ["the", "a", "of", "\u{130}x", "Straße", "", "\u{3A3}\u{391}"] {
+                map.put(key, ());
+            }
+            for probe in [
+                "the",
+                "THE",
+                "The",
+                "a",
+                "of",
+                "off",
+                "x",
+                "\u{130}x",
+                "ix",
+                "Straße",
+                "STRASSE",
+                "",
+                "\u{3C3}\u{3B1}",
+                "\u{3A3}\u{391}",
+                "zzzzzz",
+                "an",
+            ] {
+                let chars: Vec<char> = probe.chars().collect();
+                let units: Vec<u16> = probe.encode_utf16().collect();
+                assert_eq!(
+                    map.contains_key_bmp_chars(&chars),
+                    Some(map.contains_key_chars(&units, 0, units.len())),
+                    "ignore_case={ignore_case} probe={probe:?}"
+                );
+            }
+            let supplementary: Vec<char> = "a\u{10400}".chars().collect();
+            assert_eq!(map.contains_key_bmp_chars(&supplementary), None);
+        }
+        assert_eq!(
+            CharArrayMap::<()>::empty_map().contains_key_bmp_chars(&['a']),
+            Some(false)
+        );
     }
 }

@@ -59,6 +59,13 @@ impl FilteringTokenFilterLogic for StopFilterLogic {
         }
         let term_att = self.term_att.borrow();
         let length = term_att.length();
+        // PERF: a term of BMP `char`s is looked up as it is held.
+        if let Some(contained) = self
+            .stop_words
+            .contains_bmp_chars(&term_att.buffer()[..length])
+        {
+            return Ok(!contained);
+        }
         term_to_utf16(&term_att.buffer()[..length], &mut self.scratch);
         Ok(!self
             .stop_words
@@ -128,6 +135,12 @@ impl OwnedStopFilter {
             return true;
         }
         let length = attrs.term.length();
+        if let Some(contained) = self
+            .stop_words
+            .contains_bmp_chars(&attrs.term.buffer()[..length])
+        {
+            return !contained;
+        }
         term_to_utf16(&attrs.term.buffer()[..length], &mut self.scratch);
         !self
             .stop_words

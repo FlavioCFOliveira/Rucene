@@ -911,6 +911,53 @@ pub trait DocumentsIterator<'a> {
 pub trait DocumentsIterable {
     /// `iterator()`: a new iteration over the documents of the block.
     fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_>;
+
+    /// The iteration [`iterator`](Self::iterator) gives, without boxing it
+    /// for a one-document block.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0**, whose `iterator()` the
+    /// JIT keeps off the heap. `DocumentsWriterPerThread.updateDocuments`
+    /// iterates a block through this method; the default is `iterator()`
+    /// itself, so the documents and where an iteration fails are the same.
+    fn docs_iter(&self) -> DocsIter<'_> {
+        DocsIter::Boxed(self.iterator())
+    }
+}
+
+/// The iteration [`DocumentsIterable::docs_iter`] gives: over the one
+/// document of a block, or over any boxed iterator.
+pub enum DocsIter<'a> {
+    /// The document of a one-document block, until `next()` hands it out.
+    Single(Option<&'a dyn IndexableFieldIterable>),
+    /// Any other iteration.
+    Boxed(Box<dyn DocumentsIterator<'a> + 'a>),
+}
+
+impl<'a> DocumentsIterator<'a> for DocsIter<'a> {
+    #[inline]
+    fn has_next(&mut self) -> Result<bool> {
+        match self {
+            Self::Single(doc) => Ok(doc.is_some()),
+            Self::Boxed(docs) => docs.has_next(),
+        }
+    }
+
+    #[inline]
+    fn next(&mut self) -> Result<Option<&'a dyn IndexableFieldIterable>> {
+        match self {
+            // `List.of(doc).iterator().next()`: the one document, then
+            // `NoSuchElementException`, as the slice iterator raises it.
+            Self::Single(doc) => match doc.take() {
+                Some(doc) => Ok(Some(doc)),
+                None => Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                    class: "java.util.NoSuchElementException",
+                    message: None,
+                    cause: None,
+                })),
+            },
+            Self::Boxed(docs) => docs.next(),
+        }
+    }
 }
 
 /// The iterator of a slice of documents, which never fails.
@@ -959,6 +1006,10 @@ impl<D: DocumentsIterable + ?Sized> DocumentsIterable for DocumentsIterableRef<'
     fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
         self.0.iterator()
     }
+
+    fn docs_iter(&self) -> DocsIter<'_> {
+        self.0.docs_iter()
+    }
 }
 
 /// `List.of(doc)`: the one-document block `IndexWriter.updateDocument` and
@@ -977,6 +1028,10 @@ impl<'a, D: IndexableFieldIterable + ?Sized> SingleDocument<'a, D> {
 impl<D: IndexableFieldIterable + ?Sized> DocumentsIterable for SingleDocument<'_, D> {
     fn iterator(&self) -> Box<dyn DocumentsIterator<'_> + '_> {
         Box::new(SliceDocumentsIterator(std::slice::from_ref(&self.0).iter()))
+    }
+
+    fn docs_iter(&self) -> DocsIter<'_> {
+        DocsIter::Single(Some(&self.0))
     }
 }
 
@@ -1017,6 +1072,55 @@ impl<'a> StoredFieldDataInput<'a> {
 mod tests {
     use super::*;
     use crate::store::ByteArrayDataInput;
+
+    /// The one-document block's non-boxed iteration answers `hasNext()` and
+    /// `next()` as the boxed slice iterator does: the document, then
+    /// `hasNext() == false`, then `NoSuchElementException`.
+    #[test]
+    fn single_document_docs_iter_matches_the_boxed_iterator() {
+        let doc = crate::document::Document::new();
+        let block = SingleDocument::new(&doc);
+        let mut boxed = block.iterator();
+        let mut single = block.docs_iter();
+        assert!(matches!(single, DocsIter::Single(Some(_))));
+        for _ in 0..2 {
+            assert_eq!(single.has_next().unwrap(), boxed.has_next().unwrap());
+        }
+        assert!(single.next().unwrap().is_some());
+        assert!(boxed.next().unwrap().is_some());
+        assert_eq!(single.has_next().unwrap(), boxed.has_next().unwrap());
+        assert!(!single.has_next().unwrap());
+        let (Err(a), Err(b)) = (single.next(), boxed.next()) else {
+            panic!("next() past the one document must fail");
+        };
+        assert_eq!(format!("{a}"), format!("{b}"));
+    }
+
+    /// A document's non-boxed field iteration yields the fields
+    /// `iterator()` yields, in order.
+    #[test]
+    fn document_fields_iter_matches_the_boxed_iterator() {
+        let mut doc = crate::document::Document::new();
+        doc.add(
+            crate::document::StringField::new("a", "x".to_string(), crate::document::Store::YES)
+                .unwrap(),
+        );
+        doc.add(
+            crate::document::StringField::new("b", "y".to_string(), crate::document::Store::NO)
+                .unwrap(),
+        );
+        let boxed: Vec<String> = doc
+            .iterator()
+            .map(|f| f.unwrap().name().to_string())
+            .collect();
+        let fast: Vec<String> = doc
+            .fields_iter()
+            .map(|f| f.unwrap().name().to_string())
+            .collect();
+        assert!(matches!(doc.fields_iter(), FieldsIter::Shared(_)));
+        assert_eq!(boxed, fast);
+        assert_eq!(fast, ["a", "b"]);
+    }
 
     #[test]
     fn index_options_ordinals_match_java() {

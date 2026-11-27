@@ -93,7 +93,7 @@ use crate::index::leaf_reader::LeafReader;
 use crate::index::postings_enum::{PostingsEnum, POSTINGS_ENUM_NONE};
 use crate::index::terms::{SeekStatus, TermsEnum};
 use crate::index::DocValuesType;
-use crate::index::{DocumentsIterable, IndexableFieldIterable, SingleDocument};
+use crate::index::{DocumentsIterable, DocumentsIterator, IndexableFieldIterable, SingleDocument};
 use crate::index::{FieldInfos, IndexFileName, SegmentCommitInfo, SegmentInfo, Term};
 use crate::search::doc_id_set_iterator::NO_MORE_DOCS;
 use crate::search::query::{query_to_string, Query, QueryKey};
@@ -4461,7 +4461,9 @@ impl DwptGuard {
             // `next()` and the `hasNext()` that tells the last document run in
             // Java's order, so an iterator failure interrupts the block where
             // Java's does (`DocumentsWriterPerThread.java:268-271`).
-            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.iterator();
+            // PERF: `docs_iter`, which iterates a one-document block without
+            // boxing the iterator.
+            let mut iterator = docs.ok_or_else(LuceneError::null_pointer)?.docs_iter();
             while iterator.has_next()? {
                 let doc = iterator.next()?;
                 let is_last_doc = !iterator.has_next()?;
