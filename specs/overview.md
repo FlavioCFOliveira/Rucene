@@ -1,6 +1,6 @@
 # Rucene — Project Specification Overview
 
-**Version:** 0.1.0  
+**Version:** 0.2.0  
 **Target reference:** Apache Lucene Core 10.5.0  
 **Reference URLs:**
 - Source tree: <https://github.com/apache/lucene/tree/releases/lucene/10.5.0/lucene/core>
