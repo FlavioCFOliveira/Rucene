@@ -82,6 +82,27 @@ impl TermQuery {
     }
 }
 
+impl TermQuery {
+    /// The `TermStates` `createWeight` builds (`TermQuery.java:298-310`): the
+    /// pre-built ones when they were built for this searcher, else fresh ones.
+    fn term_states_for(
+        &self,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+    ) -> Result<Arc<TermStates>> {
+        let context = searcher.get_top_reader_context();
+        Ok(match self.per_reader_term_state.as_ref() {
+            Some(states) if states.was_built_for(context) => Arc::clone(states),
+            // PRTS was not pre-built for this IndexSearcher.
+            _ => Arc::new(TermStates::build(
+                searcher,
+                &self.term,
+                score_mode.needs_scores(),
+            )?),
+        })
+    }
+}
+
 impl Query for TermQuery {
     fn as_term_query(&self) -> Option<&TermQuery> {
         Some(self)
@@ -124,19 +145,27 @@ impl Query for TermQuery {
         score_mode: ScoreMode,
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        let context = searcher.get_top_reader_context();
-        let term_state = match self.per_reader_term_state.as_ref() {
-            Some(states) if states.was_built_for(context) => Arc::clone(states),
-            // PRTS was not pre-built for this IndexSearcher.
-            _ => Arc::new(TermStates::build(
-                searcher,
-                &self.term,
-                score_mode.needs_scores(),
-            )?),
-        };
-
+        let term_state = self.term_states_for(searcher, score_mode)?;
         Ok(Arc::new(TermWeight::new(
             self.clone(),
+            searcher,
+            score_mode,
+            boost,
+            Some(term_state),
+        )?))
+    }
+
+    /// The weight keeps the shared query itself, as Java's inner `TermWeight`
+    /// references `TermQuery.this`.
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let term_state = self.term_states_for(searcher, score_mode)?;
+        Ok(Arc::new(TermWeight::from_shared(
+            self,
             searcher,
             score_mode,
             boost,
@@ -213,6 +242,18 @@ impl TermWeight {
         boost: f32,
         term_states: Option<Arc<TermStates>>,
     ) -> Result<Self> {
+        Self::from_shared(Arc::new(query), searcher, score_mode, boost, term_states)
+    }
+
+    /// [`new`](Self::new) for a query held by shared reference, which the
+    /// weight keeps instead of a copy.
+    pub(crate) fn from_shared(
+        query: Arc<TermQuery>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+        term_states: Option<Arc<TermStates>>,
+    ) -> Result<Self> {
         if score_mode.needs_scores() && term_states.is_none() {
             return Err(LuceneError::illegal_state(
                 "termStates are required when scores are needed".to_string(),
@@ -269,7 +310,7 @@ impl TermWeight {
         };
 
         Ok(Self {
-            query: Arc::new(query),
+            query,
             similarity,
             sim_scorer,
             term_states,

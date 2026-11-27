@@ -893,10 +893,15 @@ impl DataInput for MappedDataInput<'_> {
 
     #[inline]
     fn read_byte(&mut self) -> Result<u8> {
-        match self.take(1) {
-            Some(window) => Ok(window[0]),
-            None => self.delegate()?.read_byte(),
+        // PERF: one bounds check for the byte LZ4 reads per token and per
+        // length byte, without `take`'s range arithmetic.
+        if !self.delegated {
+            if let Some(&b) = self.bytes.get(self.pos) {
+                self.pos += 1;
+                return Ok(b);
+            }
         }
+        self.delegate()?.read_byte()
     }
 
     #[inline]
@@ -931,10 +936,19 @@ impl DataInput for MappedDataInput<'_> {
 
     #[inline]
     fn read_short(&mut self) -> Result<i16> {
-        match self.take(2) {
-            Some(window) => Ok(i16::from_le_bytes([window[0], window[1]])),
-            None => self.delegate()?.read_short(),
+        // PERF: the match offset LZ4 reads per sequence, as one fixed-size
+        // load.
+        if !self.delegated {
+            if let Some(&pair) = self
+                .bytes
+                .get(self.pos..)
+                .and_then(|rest| rest.first_chunk::<2>())
+            {
+                self.pos += 2;
+                return Ok(i16::from_le_bytes(pair));
+            }
         }
+        self.delegate()?.read_short()
     }
 
     #[inline]

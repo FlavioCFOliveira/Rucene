@@ -85,6 +85,23 @@ pub trait Query: Debug + Send + Sync + 'static {
         )))
     }
 
+    /// [`create_weight`](Self::create_weight) for a query the caller holds by
+    /// shared reference, so that the weight can keep that reference.
+    ///
+    /// PERF: Java's weights hold `Query.this`; a Rust weight built from
+    /// `&self` must copy the query instead. The default is exactly
+    /// `create_weight`; a query whose weight keeps it overrides this to keep
+    /// the shared reference.
+    #[doc(hidden)]
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        self.create_weight(searcher, score_mode, boost)
+    }
+
     /// Rewrites this query into primitive queries — for example a prefix query
     /// into a boolean query of term queries.
     ///
