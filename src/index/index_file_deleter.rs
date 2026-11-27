@@ -753,7 +753,15 @@ impl IndexFileDeleter {
             );
         }
 
-        self.inc_ref_segment_infos(segment_infos, is_commit)?;
+        // `incRef(segmentInfos, isCommit)` reads `segmentInfos.files(isCommit)`
+        // and, for a checkpoint that is not a commit, `lastFiles.addAll(
+        // segmentInfos.files(false))` reads the same set again
+        // (`IndexFileDeleter.java:571, 592`). PERF: the set is computed once
+        // and serves both; nothing changes `segment_infos` in between.
+        let files = segment_infos.files_ordered(is_commit)?;
+        for file_name in files.iter() {
+            self.file_deleter.inc_ref(file_name);
+        }
 
         if is_commit {
             let commit_point = CommitPoint::new(
@@ -778,7 +786,7 @@ impl IndexFileDeleter {
             self.file_deleter.dec_ref_files(previous)?;
 
             // Save files so we can decr on next checkpoint/commit.
-            self.last_files.extend(segment_infos.files_ordered(false)?);
+            self.last_files.extend(files);
         }
 
         if self.info_stream.is_enabled(IFD) {
