@@ -555,14 +555,10 @@ pub fn panic_is_java_error(payload: &(dyn std::any::Any + Send)) -> bool {
         "java.lang.ThreadDeath",
     ];
     match panic_to_error(payload) {
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(_),
-            ..
-        } => true,
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, .. },
-            ..
-        } => ERRORS.contains(&class),
+        ref __lerr if matches!(&__lerr.kind, LuceneErrorKind::AssertionError(_)) => true,
+        ref __lerr if let LuceneErrorKind::Unchecked { class, .. } = &__lerr.kind => {
+            ERRORS.contains(class)
+        }
         _ => false,
     }
 }
@@ -603,14 +599,15 @@ pub fn panic_to_error(payload: &(dyn std::any::Any + Send)) -> LuceneError {
 /// [`LuceneErrorKind::Unchecked`], and the error's own rendering otherwise.
 pub fn throwable_to_string(error: &LuceneError) -> String {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } if message.is_empty() => "java.lang.AssertionError".to_string(),
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } => format!("java.lang.AssertionError: {message}"),
+        __lerr
+            if let LuceneErrorKind::AssertionError(message) = &__lerr.kind
+                && (message.is_empty()) =>
+        {
+            "java.lang.AssertionError".to_string()
+        }
+        __lerr if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+            format!("java.lang.AssertionError: {message}")
+        }
         other => other.to_string(),
     }
 }
@@ -1097,36 +1094,29 @@ mod interrupt_tests {
     #[test]
     fn panics_read_as_java_throwables() {
         let error = panic_to_error(&String::from("java.lang.IllegalStateException: boom"));
-        assert!(matches!(
-            &error,
-            LuceneError { kind: LuceneErrorKind::Unchecked { class: "java.lang.IllegalStateException", message: Some(m), .. }, .. }
-                if m == "boom"
-        ));
+        assert!(
+            matches!(&error.kind, LuceneErrorKind::Unchecked { class: "java.lang.IllegalStateException", message: Some(m), .. } if m == "boom")
+        );
         assert_eq!(
             throwable_to_string(&error),
             "java.lang.IllegalStateException: boom"
         );
         let error = panic_to_error(&"java.lang.AssertionError: boom");
-        assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::AssertionError(m), .. } if m == "boom")
-        );
+        assert!(matches!(&error.kind, LuceneErrorKind::AssertionError(m) if m == "boom"));
         assert_eq!(
             throwable_to_string(&error),
             "java.lang.AssertionError: boom"
         );
         let error = panic_to_error(&String::from("index out of bounds: 3"));
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::AssertionError(m), .. } if m == "index out of bounds: 3")
+            matches!(&error.kind, LuceneErrorKind::AssertionError(m) if m == "index out of bounds: 3")
         );
         let error = panic_to_error(&String::from("java.lang.NullPointerException"));
         assert!(matches!(
-            &error,
-            LuceneError {
-                kind: LuceneErrorKind::Unchecked {
-                    class: "java.lang.NullPointerException",
-                    message: None,
-                    ..
-                },
+            &error.kind,
+            LuceneErrorKind::Unchecked {
+                class: "java.lang.NullPointerException",
+                message: None,
                 ..
             }
         ));

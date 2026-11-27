@@ -1174,9 +1174,21 @@ struct PendingTerm {
 }
 
 impl PendingTerm {
+    #[cfg(test)]
     fn new(term: &BytesRef, state: BlockTermState) -> Self {
+        Self::with_buffer(term, state, Vec::new())
+    }
+
+    /// `new PendingTerm(BytesRef.deepCopyOf(term), state)`, the copy made into
+    /// `buffer`, a byte vector recycled from a term already written.
+    ///
+    /// PERF (rmp #679): Java's per-term `byte[]` is a bump-pointer allocation;
+    /// here each one was a malloc and a free. The bytes are the same.
+    fn with_buffer(term: &BytesRef, state: BlockTermState, mut buffer: Vec<u8>) -> Self {
+        buffer.clear();
+        buffer.extend_from_slice(&term.bytes[term.offset..term.offset + term.length]);
         Self {
-            term_bytes: term.bytes[term.offset..term.offset + term.length].to_vec(),
+            term_bytes: buffer,
             state,
         }
     }
@@ -1371,11 +1383,18 @@ struct TermsWriter<'a> {
     terms_out: &'a mut dyn IndexOutput,
     index_out: &'a mut dyn IndexOutput,
     scratch_bytes: &'a mut ByteBuffersDataOutput,
+    /// Byte vectors of pending terms already written, reused by the next
+    /// pending terms (see [`PendingTerm::with_buffer`]); shared by every
+    /// field of the writer.
+    spare_term_bytes: &'a mut Vec<Vec<u8>>,
     has_freqs: bool,
     new_blocks: Vec<PendingBlock>,
 }
 
 impl<'a> TermsWriter<'a> {
+    // Java's inner `TermsWriter` reads these from the outer writer; the port
+    // passes them, the recycled term buffers included (rmp #679).
+    #[allow(clippy::too_many_arguments)]
     fn new(
         field_info: FieldInfo,
         max_doc: i32,
@@ -1384,6 +1403,7 @@ impl<'a> TermsWriter<'a> {
         terms_out: &'a mut dyn IndexOutput,
         index_out: &'a mut dyn IndexOutput,
         scratch_bytes: &'a mut ByteBuffersDataOutput,
+        spare_term_bytes: &'a mut Vec<Vec<u8>>,
     ) -> Self {
         debug_assert!(field_info.index_options != IndexOptions::NONE);
         let has_freqs = field_info.index_options != IndexOptions::DOCS;
@@ -1410,6 +1430,7 @@ impl<'a> TermsWriter<'a> {
             terms_out,
             index_out,
             scratch_bytes,
+            spare_term_bytes,
             has_freqs,
             new_blocks: Vec::new(),
         }
@@ -1433,7 +1454,8 @@ impl<'a> TermsWriter<'a> {
                 std::any::type_name_of_val(postings_writer)
             );
             self.push_term(term, postings_writer)?;
-            let pending = PendingTerm::new(term, state);
+            let buffer = self.spare_term_bytes.pop().unwrap_or_default();
+            let pending = PendingTerm::with_buffer(term, state, buffer);
             self.sum_doc_freq += state.doc_freq as i64;
             self.sum_total_term_freq += state.total_term_freq;
             self.num_terms += 1;
@@ -1592,7 +1614,14 @@ impl<'a> TermsWriter<'a> {
             .expect("INVARIANT: write_block pushed at least one block");
         first_block.index = Some(index);
 
-        self.pending.truncate(self.pending.len() - count as usize);
+        // `pending.subList(pending.size() - count, pending.size()).clear()`;
+        // the written terms' byte vectors go back for reuse.
+        let new_len = self.pending.len() - count as usize;
+        for entry in self.pending.drain(new_len..) {
+            if let PendingEntry::Term(term) = entry {
+                self.spare_term_bytes.push(term.term_bytes);
+            }
+        }
         self.pending
             .push(PendingEntry::Block(Box::new(first_block)));
         Ok(())
@@ -2002,6 +2031,8 @@ pub struct Lucene103BlockTreeTermsWriter<'a> {
     fields: Vec<Vec<u8>>,
     closed: bool,
     scratch_bytes: ByteBuffersDataOutput,
+    /// The [`TermsWriter`]s' recycled pending-term byte vectors.
+    spare_term_bytes: Vec<Vec<u8>>,
 }
 
 impl<'a> Lucene103BlockTreeTermsWriter<'a> {
@@ -2088,6 +2119,7 @@ impl<'a> Lucene103BlockTreeTermsWriter<'a> {
             fields: Vec::new(),
             closed: false,
             scratch_bytes: ByteBuffersDataOutput::new_resettable_instance(),
+            spare_term_bytes: Vec::new(),
         })
     }
 
@@ -2224,6 +2256,7 @@ impl<'a> FieldsConsumer for Lucene103BlockTreeTermsWriter<'a> {
                 self.terms_out.as_mut(),
                 self.index_out.as_mut(),
                 &mut self.scratch_bytes,
+                &mut self.spare_term_bytes,
             );
             // `termsWriter.write(term, termsEnum, norms)` for each `term =
             // termsEnum.next()` (`Lucene103BlockTreeTermsWriter.java:383-391`).
@@ -4263,11 +4296,8 @@ mod close_family_tests {
         };
         assert!(
             matches!(
-                error,
-                crate::error::LuceneError {
-                    kind: crate::error::LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
+                &error.kind,
+                crate::error::LuceneErrorKind::CorruptIndex { .. }
             ),
             "{error:?}"
         );

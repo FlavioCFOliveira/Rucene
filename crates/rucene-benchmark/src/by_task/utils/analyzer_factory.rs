@@ -178,6 +178,21 @@ impl Analyzer for FactoryAnalyzer {
         reader
     }
 
+    /// The components as owned stages, when there is no char filter and
+    /// every factory describes its stage (rmp #679/#682 owned stream).
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        if !self.char_filter_factories.is_empty() {
+            return None;
+        }
+        rucene::analysis::owned::stages_of_factories(
+            self.tokenizer_factory.as_ref(),
+            &self.token_filter_factories,
+        )
+    }
+
     fn create_components(&self, _field_name: Option<&str>) -> Result<TokenStreamComponents> {
         let tokenizer = Arc::new(AtomicRefCell::new(self.tokenizer_factory.create()?));
         let tokenizer_for_source = Arc::clone(&tokenizer);

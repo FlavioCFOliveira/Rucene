@@ -238,26 +238,94 @@ impl DirContentSource {
     }
 }
 
+/// The lines `BufferedReader.readLine()` returns over a whole text
+/// (as `jdk::io::BufferedReader::read_line` reads them): a line ends at `\n`, `\r` or `\r\n`,
+/// which it does not include, and a last line with no terminator is a line
+/// unless it is empty.
+struct JavaLines<'a>(&'a str);
+
+impl<'a> std::iter::Iterator for JavaLines<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> Option<&'a str> {
+        let rest = self.0;
+        if rest.is_empty() {
+            return None;
+        }
+        match rest.find(['\n', '\r']) {
+            Some(end) => {
+                let skip = if rest[end..].starts_with("\r\n") {
+                    2
+                } else {
+                    1
+                };
+                self.0 = &rest[end + skip..];
+                Some(&rest[..end])
+            }
+            None => {
+                self.0 = "";
+                Some(rest)
+            }
+        }
+    }
+}
+
+/// A collection file as [`read_collection_file_sized`] returns it: the date
+/// line, the title line, the body's UTF-16 units, and the file's size when
+/// the whole file was read.
+pub(crate) type CollectionFile = (Option<String>, Option<String>, Vec<u16>, Option<u64>);
+
 /// Reads a Reuters/Dir collection file: first line is the date, 3rd is the
 /// title, rest is body (each line followed by a space).
-pub(crate) fn read_collection_file(f: &Path) -> Result<(Option<String>, Option<String>, String)> {
+///
+/// The body is returned as the UTF-16 units of Java's `bodyBuf.toString()`.
+// PERF: the body lines are appended as the UTF-16 units the reader decodes,
+// as Java's `StringBuilder` does, instead of a `String` per line that
+// `DocData::set_body` then re-encoded (rmp #679).
+///
+/// Also returns the file's size when the whole file was read:
+/// `Files.size(f)`, which the caller adds to its byte count, is then the
+/// length read, with no second look-up of the file.
+pub(crate) fn read_collection_file_sized(f: &Path) -> Result<CollectionFile> {
+    // PERF: the file is read in one call and, when it is valid UTF-8 (what
+    // `Files.newBufferedReader(f, UTF_8)` decodes without a
+    // `MalformedInputException`), split into `readLine()`'s lines in place,
+    // with no per-line buffer. Invalid input takes the reader below, which
+    // raises Java's exception where Java raises it.
+    // PERF: read to the end with no size query first (`fs::read` asks the
+    // file's metadata); a collection file fits one read.
+    let mut bytes = Vec::with_capacity(8192);
+    std::io::Read::read_to_end(&mut std::fs::File::open(f)?, &mut bytes)?;
+    if let Ok(text) = std::str::from_utf8(&bytes) {
+        let mut lines = JavaLines(text);
+        let date_str = lines.next().map(str::to_string);
+        lines.next(); // skip an empty line
+        let title = lines.next().map(str::to_string);
+        lines.next(); // skip an empty line
+        let mut body_buf: Vec<u16> = Vec::with_capacity(1024.max(text.len()));
+        for line in lines {
+            body_buf.extend(line.encode_utf16());
+            body_buf.push(u16::from(b' '));
+        }
+        return Ok((date_str, title, body_buf, Some(bytes.len() as u64)));
+    }
     let mut reader = jdk::new_buffered_reader_utf8(f)?;
-    let result = (|| -> Result<(Option<String>, Option<String>, String)> {
+    let result = (|| -> Result<(Option<String>, Option<String>, Vec<u16>)> {
         let date_str = jdk::read_line(&mut reader)?;
         jdk::read_line(&mut reader)?; // skip an empty line
         let title = jdk::read_line(&mut reader)?;
         jdk::read_line(&mut reader)?; // skip an empty line
-        let mut body_buf = String::with_capacity(1024);
-        while let Some(line) = jdk::read_line(&mut reader)? {
-            body_buf.push_str(&line);
-            body_buf.push(' ');
+        let mut body_buf: Vec<u16> = Vec::with_capacity(1024);
+        while let Some(line) = reader.read_line()? {
+            body_buf.extend_from_slice(&line);
+            body_buf.push(u16::from(b' '));
         }
         Ok((date_str, title, body_buf))
     })();
     let closed = reader.close();
     let value = result?;
     closed?;
-    Ok(value)
+    Ok((value.0, value.1, value.2, None))
 }
 
 impl ContentItemsSource for DirContentSource {
@@ -333,17 +401,59 @@ impl ContentSource for DirContentSource {
             (f, name)
         };
 
-        let (date_str, title, body_buf) = read_collection_file(&f)?;
-        self.base.add_bytes(std::fs::metadata(&f)?.len() as i64);
+        let (date_str, title, body_buf, size) = read_collection_file_sized(&f)?;
+        let size = match size {
+            Some(size) => size,
+            None => std::fs::metadata(&f)?.len(),
+        };
+        self.base.add_bytes(size as i64);
 
         let date_str = date_str.ok_or_else(LuceneError::null_pointer)?;
         let dfi = self.get_date_format_info()?;
         let date = jdk::lock(&dfi).parse_date(&date_str)?;
         doc_data.clear();
         doc_data.set_name(Some(name));
-        doc_data.set_body(Some(body_buf));
+        doc_data.set_body_utf16(Some(body_buf));
         doc_data.set_title(title);
         doc_data.set_date_from(date.as_ref());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod java_lines_tests {
+    use super::JavaLines;
+    use rucene_analysis_common::jdk::io::{BufferedReader, CodingErrorAction, InputStreamReader};
+
+    /// `JavaLines` splits a text into exactly the lines `readLine()` returns
+    /// for it, terminators (`\n`, `\r`, `\r\n`), empty lines, a last line
+    /// with or without terminator, and non-ASCII text included.
+    #[test]
+    fn java_lines_match_buffered_reader_read_line() {
+        let texts = [
+            "",
+            "\n",
+            "\r",
+            "\r\n",
+            "a",
+            "a\n",
+            "a\r\nb",
+            "a\rb\nc\r\n",
+            "\n\nx\n\n",
+            "26-FEB-1987 15:01:01.79\n\nTitle line\n\nBody one\nBody two\r\n\r\nlast",
+            "caf\u{e9}\r\r\n\u{1F600} \u{4e2d}\u{6587}\n",
+        ];
+        for text in texts {
+            let mut reader = BufferedReader::new(InputStreamReader::with_action(
+                std::io::Cursor::new(text.as_bytes().to_vec()),
+                CodingErrorAction::Report,
+            ));
+            let mut expected = Vec::new();
+            while let Some(line) = reader.read_line().unwrap() {
+                expected.push(String::from_utf16(&line).unwrap());
+            }
+            let actual: Vec<String> = JavaLines(text).map(str::to_string).collect();
+            assert_eq!(actual, expected, "{text:?}");
+        }
     }
 }

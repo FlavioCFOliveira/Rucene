@@ -1150,7 +1150,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the failing close must be reported, exactly as in Java");
     assert!(
-        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.to_string().contains("no space left")),
+        matches!(&err.kind, LuceneErrorKind::Io(io) if io.to_string().contains("no space left")),
         "unexpected error: {err:?}"
     );
     assert_eq!(policy.get_snapshot_count(), 0);
@@ -1166,7 +1166,7 @@ fn persist_close_failure_recovers_as_lucene_does() {
         .snapshot()
         .expect_err("the leftover blocks the very next attempt, as in Lucene");
     assert!(
-        matches!(&err, LuceneError { kind: LuceneErrorKind::Io(io), .. } if io.kind() == std::io::ErrorKind::AlreadyExists),
+        matches!(&err.kind, LuceneErrorKind::Io(io) if io.kind() == std::io::ErrorKind::AlreadyExists),
         "unexpected error: {err:?}"
     );
     assert_eq!(

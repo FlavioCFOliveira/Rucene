@@ -44,7 +44,7 @@ Internal module organization should mirror the Lucene Core Java structure as clo
    - When several questions need clarification, ask them one at a time (sequentially), not all at once.
    - **Boundary between acting and asking:** a decision inside the scope of the task in progress that has one obvious, low-risk answer proceeds immediately. Any work outside that scope (see 3.2), and any decision that changes scope, expected behavior, architecture, or requirements, requires prior user input.
 2. **Language.**
-   - **English documentation.** All project documentation — the `README.md`, this `CLAUDE.md`, the specifications, and code documentation — is written in correct, professional English, with no spelling, grammar, or syntax errors.
+   - **English documentation.** All project documentation — the `README.md`, this `CLAUDE.md`, the specifications, and code documentation — is written in flawless, professional English, with no spelling, grammar, or syntax errors, and always meets the writing style below.
    - **Writing style.** Write every text (documentation, task definitions, `rmp` comments, subagent briefs, and messages) so that it is:
      - **explicit** — it states clearly what is intended;
      - **objective** — it states what is to be executed;
@@ -53,16 +53,18 @@ Internal module organization should mirror the Lucene Core Java structure as clo
    - **Interpretation.** Interpret every instruction the same way: by what it states explicitly, within the scope it defines.
 3. **Documentation faithful to the code.** Documentation must be accurate and always reflect the actual state of the code.
 4. **Work flow.** Work always follows this order: **Specify → Implement → Test → Document.** When several tasks share one effort (see 5.3), each step covers the whole effort.
-5. **Open-source first.** For every component, identify the trustworthy open-source projects that already implement or solve it, and use them as the starting point: copy from them when possible, or study them. Whenever possible, use more than one reference project, so that the positive and negative aspects of each approach can be evaluated. Use the source code as the absolute source of truth. See section 13.
+5. **Open-source first.** At every moment of analysis, exploration, and development, identify the trustworthy reference open-source projects that already implement or solve what is needed, and use them as the starting point: copy from them when possible, or study them. Whenever possible, use more than one reference project, so that the positive and negative aspects of each approach can be evaluated. Use the source code as the absolute source of truth. See section 13.
 6. **ALWAYS converge — this rule is mandatory and has no exceptions.** Every development effort **MUST** seek convergence with the other open tasks — in `rmp` or requested ad hoc by the user — so that work synergy is maximized. Before starting any work, find every task whose objectives are complementary or whose functional or technical proximity can be verified (the same files, subsystem, or tests), and join them into **one** effort. Then:
    - **write the code of all those tasks at once**, in a single pass;
    - **test the code of all those tasks at once**, in a single run;
+   - **optimize the code of all those tasks at once**, in a single pass;
    - **audit, commit, and document them together**, once.
 
-   Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. Grouping is bound only by the quality bar of 5.3: it must deliver better work than task-by-task development, never worse. See section 5.3.
+   Developing converging tasks one by one is a **defect in how the work is done**, not a style choice. Grouping is bound only by the quality bar of 5.3: it must deliver better work than task-by-task development, never worse, and it never compromises effectiveness (see section 17). See section 5.3.
 7. **Focused development — shortest path first.** Every development is focused on, and objective about, the purpose of its tasks or of the user's request, in line with the rules above.
    - **Create** and interpret tasks objectively, specifically, and concretely, without digressions or assumptions.
    - Before starting any development, determine the shortest path (strategy) to its objectives and requirements, taking convergences and synergies into account (rule 6); only then proceed with that strategy. The shortest path never lowers the quality of the delivery.
+8. **Effectiveness first, always.** Every deliverable is effective first and efficient second; efficiency never overrides effectiveness. See section 17.
 
 ---
 
@@ -148,13 +150,15 @@ Execution notes:
 
 Guiding principle: **make the effort pay — deliver the most with the least work.**
 
-**MANDATORY: developments ALWAYS seek convergence with one another, so that work synergy is maximized (section 2, rule 6).** Write the code of multiple tasks at once, test the code of multiple tasks at once, and likewise audit, commit, and document them together. Never develop converging tasks one by one.
+**MANDATORY: developments ALWAYS seek convergence with one another, so that work synergy is maximized (section 2, rule 6).** Write the code of multiple tasks at once, test the code of multiple tasks at once, optimize it at once, and likewise audit, commit, and document them together. Never develop converging tasks one by one.
+
+Synergy and convergence exist to **maximize work efficiency without ever losing effectiveness** (see section 17): the quality of the result is never compromised.
 
 This is the default way of working for all project work, both `rmp` tasks and ad hoc requests. It requires no request from the user, and it is never recorded as an `rmp` task.
 
-- **Convergence.** Always look for tasks whose objectives are complementary, or whose functional or technical proximity can be verified (use the Knowledge Graph). Turn every such convergence into synergy.
-- **Synergy between tasks.** Join converging tasks into a single development effort.
-- **Synergy within each task and each effort.** Inside a single task as well as inside a shared effort, group work of the same type: write all the code at once, then run the tests for all the changed code at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
+- **Convergence.** ALWAYS look for tasks whose objectives are complementary, or whose functional or technical proximity can be verified (use the Knowledge Graph). Turn every such convergence into synergy.
+- **Synergy between tasks.** Proactively join converging tasks that can be executed profitably in the same iteration into a single development effort, choosing the grouping that yields the most from that effort.
+- **Synergy within each task and each effort.** Inside a single task as well as inside a shared effort, group work of the same type: write all the code at once, then run the tests for all the changed code at once, then optimize all of it at once, then write all the documentation at once, instead of writing and testing small pieces one by one. When the scope is too large for one pass, split it into the largest blocks that can each be handled in one pass. Apply this principle to all work.
 - **Fewest iterations.** **Reach the objectives with the fewest tasks and iterations possible.** Seeking synergies and optimizing effort is constant in every way of working on this project.
 - **Quality bar.** Aggregate tasks and work of the same type only when grouping makes delivery faster without lowering its quality. A shared effort must deliver better work than task-by-task development, never worse.
 - **Resources.** Make full use of the internal resources available (subagents, skills, local CLIs, and the Knowledge Graph), so that deliveries are faster and cost the user less.
@@ -165,6 +169,8 @@ This is the default way of working for all project work, both `rmp` tasks and ad
 Use the `rmp` comment feature to track the progress of the work **as it happens**. Comment **both the sprints and the tasks**, always with the comment type whose meaning fits: sprint comments report the progress of the sprint in progress; task comments report the progress of that task. Write each entry at the moment it happens, never reconstructed at closing time.
 
 The log serves two purposes: to **report** what is done, and to **find out** what was done. Read it before resuming, revisiting, or reporting on a task or sprint.
+
+Know every comment type below, and use the vocabulary of the types correctly: each entry gets the type whose meaning frames what it reports.
 
 **Comment types and their meaning:**
 
@@ -574,3 +580,28 @@ All work on this project must be empirical:
 - Record any non-obvious findings in the Knowledge Graph, citing the exact source URL and/or commit hash so they can be re-verified later.
 
 If a required source does not exist or is ambiguous, ask the user how to proceed rather than guessing.
+
+---
+
+## 17. Efficiency policy
+
+This policy applies globally and across all work: code, tests, features, documentation, analyses, and every other deliverable.
+
+### 17.1 Definitions
+
+- **Effective:** it meets its objective completely and integrally, with no compromises or conditions.
+- **Efficient:** it is effective, and it is achieved economically, with only the minimum resources its objective needs: the fewest work cycles and the least CPU, RAM, I/O, and any other resource.
+
+### 17.2 Effectiveness first
+
+- Every deliverable is **effective first, without exception, and efficient second.** Actively ensure it.
+- Efficiency never overrides effectiveness. **Never deliver something that does not fully do what is expected of it in favor of efficiency.**
+- Deliver efficient work only when it is also effective. A first version may be only effective and become efficient later.
+- Synergy and convergence (5.3), the shortest path (section 2, rule 7), test economy (9.3), and token economy (section 12) are means of efficiency, and this rule binds them. It agrees with section 11: correctness comes before speed.
+
+### 17.3 Empirical observation
+
+- **Observed, never assumed.** Effectiveness and efficiency are established empirically, with evidence from the project, never assumed.
+- **Detect non-contributing operations.** Use all of the project's profiling knowledge — profilers, tracing, metrics, and comparisons against the Java oracle — to detect operations that run without contributing to the objective of the code, the feature, or the tests.
+- **Find more efficient means.** Use the same knowledge to determine whether a more efficient way exists to produce the same result.
+- The diagnostic techniques and the evidence standard are those of section 8; this rule applies them to every deliverable, not only to defects and performance issues.

@@ -356,10 +356,8 @@ impl EnsureOpen {
 /// Throws the `AlreadyClosedException` of a failed `ensureOpen()` from a
 /// signature that cannot fail.
 fn throw_if_closed(result: Result<()>) {
-    if let Err(LuceneError {
-        kind: LuceneErrorKind::AlreadyClosed { message, .. },
-        ..
-    }) = result
+    if let Err(LuceneErrorKind::AlreadyClosed { message, .. }) =
+        result.map_err(LuceneError::into_kind)
     {
         crate::store::java_nio_file::throw_unchecked(
             "org.apache.lucene.store.AlreadyClosedException",
@@ -990,10 +988,9 @@ mod tests {
             "this IndexReader cannot be used anymore as one of its child readers was closed";
         for core in [&parent, &grand_parent] {
             match core.ensure_open() {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                    ..
-                }) => {
+                Err(ref __lerr)
+                    if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+                {
                     assert_eq!(message, closed_by_child)
                 }
                 other => panic!("expected AlreadyClosed, got {other:?}"),
@@ -1002,10 +999,9 @@ mod tests {
         assert!(handle.ensure_open().is_err());
 
         match child.register_parent_core(&IndexReaderCore::new()) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "this IndexReader is closed")
             }
             other => panic!("expected AlreadyClosed, got {other:?}"),

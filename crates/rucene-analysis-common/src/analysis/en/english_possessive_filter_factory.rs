@@ -110,4 +110,12 @@ impl TokenFilterFactory for EnglishPossessiveFilterFactory {
     fn create(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
         Ok(Box::new(new_english_possessive_filter(input)?))
     }
+
+    /// `create(input)` as an owned stage
+    /// (`EnglishPossessiveFilterFactory.java:56-59`).
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        Some(Ok(Box::new(
+            crate::analysis::en::english_possessive_filter::OwnedEnglishPossessiveFilter,
+        )))
+    }
 }

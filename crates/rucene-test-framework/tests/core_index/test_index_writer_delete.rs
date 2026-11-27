@@ -748,13 +748,11 @@ fn test_updates_on_disk_full() -> Result<()> {
 /// `(IOException) ise.getCause()`.
 fn io_cause(ise: &LuceneError) -> LuceneError {
     match ise {
-        LuceneError {
-            kind:
-                LuceneErrorKind::IllegalState {
-                    cause: Some(cause), ..
-                },
-            ..
-        } => {
+        __lerr
+            if let LuceneErrorKind::IllegalState {
+                cause: Some(cause), ..
+            } = &__lerr.kind =>
+        {
             if cause.is_io_exception() {
                 cause.duplicate()
             } else {

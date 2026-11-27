@@ -4815,20 +4815,12 @@ mod tests {
                 vec![0.0, 0.0],
             )
         };
-        assert!(matches!(
-            NormalizedFloatVectorValues::new(empty()),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            quantize(empty()),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(NormalizedFloatVectorValues::new(empty()), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
+        assert!(
+            matches!(quantize(empty()), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
 
         // Positive control: one vector of two dimensions.
         let values =

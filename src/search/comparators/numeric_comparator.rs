@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::error::{LuceneError, Result};
 use crate::index::point_values::is_estimated_point_count_greater_than_or_equal_to;
 use crate::index::{
-    IntersectVisitor, LeafReader, LeafReaderContext, NumericDocValues, PointTree, PointValues,
-    Relation,
+    DocValuesIterator, IntersectVisitor, LeafReader, LeafReaderContext, NumericDocValues,
+    PointTree, PointValues, Relation,
 };
 use crate::search::comparators::updateable_doc_id_set_iterator::UpdateableDocIdSetIterator;
 use crate::search::doc_id_set_iterator::{all, DocIdSetIterator, NO_MORE_DOCS};
@@ -63,8 +63,18 @@ pub struct NumericLeafState {
     /// The doc values of the sort field in this segment.
     ///
     /// Equivalent to the `protected final NumericDocValues docValues` field.
-    doc_values: Box<dyn NumericDocValues>,
+    doc_values: LeafDocValues,
     competitive: Option<CompetitiveDisiBuilder>,
+}
+
+/// The doc values a [`NumericLeafState`] reads: Java's `NumericDocValues
+/// docValues` field, with the empty instance of `DocValues.getNumeric` held by
+/// value so that reading it is a static call.
+enum LeafDocValues {
+    /// `DocValues.emptyNumeric()`.
+    Empty(crate::index::EmptyNumericDocValues),
+    /// Any other doc values.
+    Other(Box<dyn NumericDocValues>),
 }
 
 impl NumericLeafState {
@@ -72,7 +82,37 @@ impl NumericLeafState {
     ///
     /// Equivalent to reading `NumericLeafComparator.docValues`.
     pub fn doc_values(&mut self) -> &mut dyn NumericDocValues {
-        self.doc_values.as_mut()
+        match &mut self.doc_values {
+            LeafDocValues::Empty(empty) => empty,
+            LeafDocValues::Other(doc_values) => doc_values.as_mut(),
+        }
+    }
+
+    /// `docValues.advanceExact(doc) ? docValues.longValue() : <missing>`,
+    /// the read of a leaf comparator's `getValueForDoc(doc)`: the value, or
+    /// `None` when the document has none.
+    ///
+    /// PERF: the segment's empty doc values (a field without numeric doc
+    /// values in this segment) are called statically and inlined, as the JIT
+    /// inlines Java's monomorphic `DocValues.emptyNumeric()` call site.
+    #[inline]
+    pub(crate) fn exact_long_value(&mut self, doc: i32) -> Result<Option<i64>> {
+        match &mut self.doc_values {
+            LeafDocValues::Empty(empty) => {
+                if empty.advance_exact(doc)? {
+                    empty.long_value().map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+            LeafDocValues::Other(doc_values) => {
+                if doc_values.advance_exact(doc)? {
+                    doc_values.long_value().map(Some)
+                } else {
+                    Ok(None)
+                }
+            }
+        }
     }
 
     fn competitive_common_mut(&mut self) -> Option<&mut CompetitiveCommon> {
@@ -297,10 +337,26 @@ impl NumericComparator {
 
     /// Opens the doc values of `reader` through the installed source, or
     /// through `DocValues.getNumeric` when none is installed.
-    fn open_doc_values(&self, reader: &dyn LeafReader) -> Result<Box<dyn NumericDocValues>> {
+    ///
+    /// `DocValues.getNumeric(reader, field)` without a source: the empty
+    /// instance it returns for a segment without the field's values is kept
+    /// by value (see [`NumericLeafState::exact_long_value`]).
+    fn open_doc_values(&self, reader: &dyn LeafReader) -> Result<LeafDocValues> {
         match self.doc_values_source.as_ref() {
-            Some(source) => source(reader, &self.field),
-            None => crate::index::DocValues::get_numeric(reader, &self.field),
+            Some(source) => Ok(LeafDocValues::Other(source(reader, &self.field)?)),
+            None => match reader.get_numeric_doc_values(&self.field)? {
+                Some(doc_values) => Ok(LeafDocValues::Other(doc_values)),
+                None => {
+                    crate::index::DocValues::check_field(
+                        reader,
+                        &self.field,
+                        &[crate::index::DocValuesType::NUMERIC],
+                    )?;
+                    Ok(LeafDocValues::Empty(
+                        crate::index::DocValues::empty_numeric(),
+                    ))
+                }
+            },
         }
     }
 
@@ -370,7 +426,7 @@ impl NumericComparator {
         top_as_comparable_long: i64,
     ) -> Result<NumericLeafState> {
         let doc_values = self.open_doc_values(context.leaf_reader().as_ref())?;
-        self.new_leaf_with_doc_values(context, top_as_comparable_long, doc_values)
+        self.new_leaf_with(context, top_as_comparable_long, doc_values)
     }
 
     /// Builds the per-segment state over `doc_values`, the doc values a
@@ -391,6 +447,20 @@ impl NumericComparator {
         context: &LeafReaderContext,
         top_as_comparable_long: i64,
         doc_values: Box<dyn NumericDocValues>,
+    ) -> Result<NumericLeafState> {
+        self.new_leaf_with(
+            context,
+            top_as_comparable_long,
+            LeafDocValues::Other(doc_values),
+        )
+    }
+
+    /// The body of [`new_leaf_with_doc_values`](Self::new_leaf_with_doc_values).
+    fn new_leaf_with(
+        &self,
+        context: &LeafReaderContext,
+        top_as_comparable_long: i64,
+        doc_values: LeafDocValues,
     ) -> Result<NumericLeafState> {
         let reader = context.leaf_reader();
         let max_doc = reader.max_doc();

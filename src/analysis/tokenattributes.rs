@@ -448,10 +448,13 @@ impl Clone for CharTermAttributeImpl {
     fn clone(&self) -> Self {
         let mut clone = Self::new();
         clone.copy_buffer(&self.term_buffer, 0, self.term_length);
-        let bytes = self.get_bytes_ref();
-        let mut builder = BytesRefBuilder::new();
-        builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
-        clone.builder = Mutex::new(builder);
+        // `t.builder.copyBytes(builder.get())` (`CharTermAttributeImpl.java:
+        // 225-226`): the builder's current bytes, not a re-encoding of the term.
+        let builder = self.builder.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes = builder.get_ref();
+        let mut copy = BytesRefBuilder::new();
+        copy.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
+        clone.builder = Mutex::new(copy);
         clone
     }
 }
@@ -520,13 +523,15 @@ impl AttributeImpl for CharTermAttributeImpl {
         self.term_length = 0;
     }
 
+    /// Equivalent to `CharTermAttributeImpl.copyTo(AttributeImpl)`
+    /// (`CharTermAttributeImpl.java:263-266`), which copies the term buffer
+    /// only: the target's builder is scratch space that `get_bytes_ref`
+    /// refills before every read.
     fn copy_to(&self, target: &mut dyn AttributeImpl) {
+        // PERF: no UTF-8 re-encoding and no builder allocation per copy
+        // (`ShingleFilter` copies every input token at least twice).
         if let Some(t) = target.as_any_mut().downcast_mut::<CharTermAttributeImpl>() {
             t.copy_buffer(&self.term_buffer, 0, self.term_length);
-            let bytes = self.get_bytes_ref();
-            let mut builder = BytesRefBuilder::new();
-            builder.copy_bytes(&bytes.bytes, bytes.offset, bytes.length);
-            t.builder = Mutex::new(builder);
         }
     }
 

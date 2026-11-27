@@ -392,10 +392,9 @@ impl TestRuleAdapter for TestRuleTemporaryFilesCleanup {
                     .and_then(|c| c.get_annotation::<SuppressTempFileChecks>())
                 {
                     let message = match &e {
-                        rucene::error::LuceneError {
-                            kind: rucene::error::LuceneErrorKind::Io(io),
-                            ..
-                        } => java_message_of(io).unwrap_or_default(),
+                        __lerr if let rucene::error::LuceneErrorKind::Io(io) = &__lerr.kind => {
+                            java_message_of(io).unwrap_or_default()
+                        }
                         other => other.to_string(),
                     };
                     system::err_println(&format!(
@@ -405,13 +404,12 @@ impl TestRuleAdapter for TestRuleTemporaryFilesCleanup {
                     return;
                 }
                 let thrown = match &e {
-                    rucene::error::LuceneError {
-                        kind: rucene::error::LuceneErrorKind::Io(io),
-                        ..
-                    } => Throwable::new(
-                        java_class_of(io).to_string(),
-                        java_message_of(io).unwrap_or_default(),
-                    ),
+                    __lerr if let rucene::error::LuceneErrorKind::Io(io) = &__lerr.kind => {
+                        Throwable::new(
+                            java_class_of(io).to_string(),
+                            java_message_of(io).unwrap_or_default(),
+                        )
+                    }
                     other => Throwable::new("java.io.IOException", other.to_string()),
                 };
                 errors.push(thrown);

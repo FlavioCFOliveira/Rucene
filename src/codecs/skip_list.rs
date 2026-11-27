@@ -793,7 +793,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
         let error = match MultiLevelSkipListWriter::new_same_multiplier(codec, 1 << 16, 10, 1) {
@@ -801,13 +801,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(
-                &error,
-                LuceneError {
-                    kind: LuceneErrorKind::Arithmetic(_),
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(_)),
             "{error:?}"
         );
     }

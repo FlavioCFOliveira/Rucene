@@ -112,7 +112,7 @@ pub fn searcher_expired(message: String) -> LuceneError {
 
 /// Whether `catch (SearcherExpiredException see)` catches `e`.
 pub fn is_searcher_expired(e: &LuceneError) -> bool {
-    matches!(e, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. } if *class == SEARCHER_EXPIRED_EXCEPTION)
+    matches!(&e.kind, LuceneErrorKind::Unchecked { class, .. } if *class == SEARCHER_EXPIRED_EXCEPTION)
 }
 
 /// `System.nanoTime()`: nanoseconds from a fixed, arbitrary origin.

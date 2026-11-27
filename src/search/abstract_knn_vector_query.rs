@@ -880,7 +880,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
             "{error:?}"
         );
     }

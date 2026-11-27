@@ -1556,7 +1556,7 @@ impl LuceneTestCase {
         dir: &dyn rucene::store::Directory,
         file_name: &str,
     ) -> rucene::error::Result<bool> {
-        use rucene::error::{LuceneError, LuceneErrorKind};
+        use rucene::error::LuceneErrorKind;
         use rucene::store::java_nio_file::{java_class_of, NO_SUCH_FILE_EXCEPTION};
         match dir.open_input(file_name, &*rucene::store::READONCE_IO_CONTEXT) {
             Ok(mut input) => {
@@ -1565,22 +1565,20 @@ impl LuceneTestCase {
             }
             // An `io::Error` of kind `NotFound` that carries no Java class
             // stands for one of the two (an OS error the port did not name).
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            }) if matches!(
-                java_class_of(&e),
-                NO_SUCH_FILE_EXCEPTION | "java.io.FileNotFoundException"
-            ) || (e.kind() == std::io::ErrorKind::NotFound
-                && rucene::store::java_nio_file::java_exception_of(&e).is_none()) =>
+            Err(ref __lerr)
+                if let LuceneErrorKind::Io(e) = &__lerr.kind
+                    && (matches!(
+                        java_class_of(e),
+                        NO_SUCH_FILE_EXCEPTION | "java.io.FileNotFoundException"
+                    ) || (e.kind() == std::io::ErrorKind::NotFound
+                        && rucene::store::java_nio_file::java_exception_of(e).is_none())) =>
             {
                 Ok(false)
             }
             // `IndexNotFoundException extends FileNotFoundException`.
-            Err(LuceneError {
-                kind: LuceneErrorKind::IndexNotFound(_),
-                ..
-            }) => Ok(false),
+            Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IndexNotFound(_)) => {
+                Ok(false)
+            }
             Err(e) => Err(e),
         }
     }
@@ -3363,10 +3361,10 @@ impl LuceneTestCase {
             // TEST_DIRECTORY is not a sub-class of FSDirectory, so draw one at random
             // (`CommandLineUtil.loadFSDirectoryClass`'s `ClassCastException`
             // carries `Class.toString()`, `class <name>` or `interface <name>`).
-            Err(rucene::error::LuceneError {
-                kind: rucene::error::LuceneErrorKind::Other(message),
-                ..
-            }) if message.starts_with("class ") || message.starts_with("interface ") => {
+            Err(ref __lerr)
+                if let rucene::error::LuceneErrorKind::Other(message) = &__lerr.kind
+                    && (message.starts_with("class ") || message.starts_with("interface ")) =>
+            {
                 fsdir_class = RandomPicks::random_from(&*random, &FS_DIRECTORIES).to_string();
                 CommandLineUtil::load_fs_directory_class(&fsdir_class)
                     .unwrap_or_else(|e| rethrow_lucene_error(&e))

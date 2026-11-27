@@ -203,11 +203,11 @@ impl PivotOps for HashFallbackSorter<'_, '_> {
 fn compare_unsigned_from(a: &[u8], b: &[u8], k: usize) -> i32 {
     let a = a.get(k..).unwrap_or(&[]);
     let b = b.get(k..).unwrap_or(&[]);
-    let n = a.len().min(b.len());
-    for i in 0..n {
-        if a[i] != b[i] {
-            return i32::from(a[i]) - i32::from(b[i]);
-        }
+    // PERF: the first differing byte found eight bytes at a time, as the
+    // JDK's `Arrays.compareUnsigned` intrinsic compares wide words.
+    let i = crate::util::string_helper::mismatch_index(a, b);
+    if i < a.len().min(b.len()) {
+        return i32::from(a[i]) - i32::from(b[i]);
     }
     a.len() as i32 - b.len() as i32
 }
@@ -990,12 +990,11 @@ impl BytesRefHash {
         let new_mask = new_size as i32 - 1;
         let new_high_mask = !new_mask;
         let mut new_ids = vec![-1i32; new_size];
-        for slot in 0..self.ids.len() {
-            let entry = self.ids[slot];
-            if entry == -1 {
-                continue;
-            }
-            let term_id = entry & self.hash_mask;
+        // `for (int id = 0; id < count; id++)`: the terms are re-inserted in
+        // term-id order, as Java does, so the slots end up where Java's do.
+        // PERF: the pool is then read in the order the terms were written
+        // into it, not in hash-slot order.
+        for term_id in 0..self.count {
             let hashcode = pool.hash_at(self.starts()[term_id as usize]);
             let mut code = hashcode;
             let mut hash_pos = (code & new_mask) as usize;

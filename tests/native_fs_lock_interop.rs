@@ -39,7 +39,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use rucene::error::{LuceneError, LuceneErrorKind};
+use rucene::error::LuceneErrorKind;
 use rucene::store::{Directory, FSDirectory};
 
 fn lucene_jar() -> PathBuf {
@@ -147,11 +147,8 @@ fn rucene_cannot_obtain_the_write_lock_while_lucene_holds_it() {
     assert_eq!(rest.trim(), "released");
 
     match refused {
-        Err(LuceneError {
-            kind: LuceneErrorKind::LockObtainFailed { message, .. },
-            ..
-        }) => {
-            assert_eq!(message, held_by_another_program(tmp.path()))
+        Err(ref __lerr) if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind => {
+            assert_eq!(*message, held_by_another_program(tmp.path()))
         }
         other => panic!(
             "expected LockObtainFailedException while Lucene holds write.lock, got {:?}",

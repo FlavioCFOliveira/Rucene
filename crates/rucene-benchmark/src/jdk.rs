@@ -10,7 +10,7 @@
 //! | the functions below | `System`, `Thread`, `String`, `Integer`, `Double` and `Boolean` members |
 //! | [`run_main`] | the `java` launcher running a class's `main(String[])` |
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rucene::error::{LuceneError, Result};
@@ -159,6 +159,13 @@ pub fn java_trim_utf16(s: &[u16]) -> &[u16] {
 /// surrogate (core [`UnicodeUtil::utf16_to_utf8`](rucene::util::unicode_util::UnicodeUtil::utf16_to_utf8)).
 pub fn utf16_to_string(s: &[u16]) -> String {
     use rucene::util::unicode_util::{UnicodeUtil, MAX_UTF8_BYTES_PER_CHAR};
+    // PERF: an all-ASCII text (a unit below 0x80 is its own UTF-8 byte and
+    // never a surrogate) is narrowed directly, without the 3x scratch buffer
+    // and the general encoder: the same bytes (rmp #679, sample.alg bodies).
+    if s.iter().all(|&u| u < 0x80) {
+        let bytes: Vec<u8> = s.iter().map(|&u| u as u8).collect();
+        return String::from_utf8(bytes).expect("INVARIANT: ASCII bytes are UTF-8");
+    }
     let mut out = vec![0u8; s.len() * MAX_UTF8_BYTES_PER_CHAR];
     let n = UnicodeUtil::utf16_to_utf8(s, 0, s.len(), &mut out);
     out.truncate(n);
@@ -345,24 +352,72 @@ pub fn lock<T: ?Sized>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_,
 /// **Divergence.** Java reports the JVM heap (`Runtime.totalMemory()`, the
 /// committed heap, and `freeMemory()`, its unused part), which the
 /// benchmark's `TaskStats` records (`TaskStats.java:73-74`, `:79-87`). A
-/// Rust process has no managed heap: `total_memory` is the process's
-/// resident set size (`VmRSS` of `/proc/self/status`, 0 where it cannot be
-/// read) and `free_memory` is 0, so "used" equals "total".
+/// Rust process has no managed heap: `total_memory` is the number of heap
+/// bytes currently allocated through [`CountingAllocator`], and
+/// `free_memory` is 0, so "used" equals "total". Like Java's, the figure is a
+/// field read. It is 0 in a process whose global allocator is not
+/// [`CountingAllocator`]; the `benchmark` executable installs it.
 pub struct Runtime;
+
+/// The live heap bytes of [`CountingAllocator`].
+static LIVE_HEAP_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// A global allocator that forwards to [`System`](std::alloc::System) and
+/// keeps the number of live heap bytes for [`Runtime::total_memory`].
+///
+/// PERF: `TaskStats` reads `totalMemory()` twice per task run, i.e. twice per
+/// `AddDoc`; reading `/proc` for the process RSS was a syscall per read
+/// (27 % of an indexing run with a held `statm` file, 77 % with
+/// `/proc/self/status`; rmp #679). The counter costs one relaxed atomic add
+/// per allocation and one subtraction per release.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct CountingAllocator;
+
+// SAFETY: every method forwards to `System` with the caller's arguments
+// unchanged, so `System`'s guarantees hold; the counter updates only read
+// `layout.size()` / `new_size` and never touch the memory.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `alloc`'s contract.
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            LIVE_HEAP_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `alloc_zeroed`'s contract.
+        let ptr = unsafe { std::alloc::System.alloc_zeroed(layout) };
+        if !ptr.is_null() {
+            LIVE_HEAP_BYTES.fetch_add(layout.size(), Ordering::Relaxed);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: forwarded unchanged; `ptr` was allocated by this allocator,
+        // i.e. by `System`, with `layout`.
+        unsafe { std::alloc::System.dealloc(ptr, layout) };
+        LIVE_HEAP_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: forwarded unchanged; the caller upholds `realloc`'s contract.
+        let new_ptr = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() {
+            // On failure the old block stays allocated with its old size.
+            LIVE_HEAP_BYTES.fetch_add(new_size, Ordering::Relaxed);
+            LIVE_HEAP_BYTES.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
+        new_ptr
+    }
+}
 
 impl Runtime {
     /// `Runtime.getRuntime().totalMemory()`.
     pub fn total_memory() -> i64 {
-        std::fs::read_to_string("/proc/self/status")
-            .ok()
-            .and_then(|status| {
-                status.lines().find_map(|line| {
-                    let rest = line.strip_prefix("VmRSS:")?;
-                    let kb: i64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
-                    Some(kb * 1024)
-                })
-            })
-            .unwrap_or(0)
+        LIVE_HEAP_BYTES.load(Ordering::Relaxed) as i64
     }
 
     /// `Runtime.getRuntime().freeMemory()`.
@@ -573,5 +628,61 @@ pub mod system {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// The ASCII fast path of `utf16_to_string` gives the general encoder's
+    /// text, and a non-ASCII text (an unpaired surrogate included) still
+    /// takes the encoder.
+    #[test]
+    fn utf16_to_string_ascii_fast_path_matches_the_encoder() {
+        use super::utf16_to_string;
+        use rucene::util::unicode_util::{UnicodeUtil, MAX_UTF8_BYTES_PER_CHAR};
+        let general = |s: &[u16]| {
+            let mut out = vec![0u8; s.len() * MAX_UTF8_BYTES_PER_CHAR];
+            let n = UnicodeUtil::utf16_to_utf8(s, 0, s.len(), &mut out);
+            out.truncate(n);
+            String::from_utf8(out).unwrap()
+        };
+        let ascii: Vec<u16> = (0u16..0x80)
+            .chain("Well, this is text. ".encode_utf16())
+            .collect();
+        assert_eq!(utf16_to_string(&ascii), general(&ascii));
+        let mixed: Vec<u16> = "a\u{e7}\u{10000}z"
+            .encode_utf16()
+            .chain([0xD800, 0x41])
+            .collect();
+        assert_eq!(utf16_to_string(&mixed), general(&mixed));
+        assert_eq!(utf16_to_string(&[]), "");
+    }
+    use super::Runtime;
+
+    /// The lib's test binary runs on [`super::CountingAllocator`] (see
+    /// `lib.rs`): `total_memory` grows by an allocation's size while it is
+    /// live and falls back when it is released. Other test threads allocate
+    /// too, so the check retries until one window is undisturbed.
+    #[test]
+    fn total_memory_counts_live_heap_bytes() {
+        const SIZE: usize = 64 << 20;
+        let mut exact = 0;
+        for _ in 0..50 {
+            let before = Runtime::total_memory();
+            let block = std::hint::black_box(Vec::<u8>::with_capacity(SIZE));
+            let during = Runtime::total_memory();
+            drop(block);
+            let after = Runtime::total_memory();
+            assert!(before > 0, "the counting allocator is not installed");
+            assert!(
+                during - before >= SIZE as i64 / 2,
+                "a live 64 MiB block is not counted"
+            );
+            if during - before == SIZE as i64 && after == before {
+                exact += 1;
+            }
+        }
+        assert!(exact > 0, "no undisturbed window in 50 attempts");
     }
 }

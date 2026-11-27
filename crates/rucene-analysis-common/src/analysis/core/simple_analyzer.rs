@@ -66,6 +66,23 @@ impl Analyzer for SimpleAnalyzer {
         "org.apache.lucene.analysis.core.SimpleAnalyzer"
     }
 
+    /// `createComponents`' `LetterTokenizer` and `LowerCaseFilter` as owned
+    /// stages (rmp #679 owned chain).
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        use crate::analysis::util::char_tokenizer::{CharTokenizerAdapter, OwnedCharTokenizer};
+        Some(Ok(rucene::analysis::owned::OwnedStages::new(Box::new(
+            OwnedCharTokenizer::new(CharTokenizerAdapter::new(
+                super::letter_tokenizer::LetterTokenizerLogic,
+            )),
+        ))
+        .with_filter(Box::new(
+            rucene::analysis::lower_case_filter::OwnedLowerCaseFilter,
+        ))))
+    }
+
     /// Equivalent to `SimpleAnalyzer.createComponents(String)`:
     /// `new TokenStreamComponents(tokenizer, new LowerCaseFilter(tokenizer))`,
     /// the tokenizer's `setReader` as the source.

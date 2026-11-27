@@ -20,6 +20,7 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -146,12 +147,41 @@ pub enum NumericType {
     Double,
 }
 
+/// FNV-1a over the bytes of a field name, the hasher of [`DocState`]'s maps.
+///
+/// PERF: Java's `HashMap<String, Field>` hashes with the name's cached
+/// `String.hashCode`, so the per-document lookups of the constant field
+/// names cost no hashing; std's default SipHash costs ~7 % of `createDocument`
+/// here. The maps are never iterated, so the hasher changes no behaviour.
+struct FieldNameHasher(u64);
+
+impl Default for FieldNameHasher {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Hasher for FieldNameHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// A map keyed by field name, with [`FieldNameHasher`].
+type FieldMap = HashMap<String, DocField, BuildHasherDefault<FieldNameHasher>>;
+
 /// Equivalent to `org.apache.lucene.benchmark.byTask.feeds.DocMaker.DocState`:
 /// document state, supports reuse of field instances across documents (see
 /// `reuseFields` parameter).
 pub struct DocState {
-    fields: Option<HashMap<String, DocField>>,
-    numeric_fields: Option<HashMap<String, DocField>>,
+    fields: Option<FieldMap>,
+    numeric_fields: Option<FieldMap>,
     reuse_fields: bool,
     /// `doc`.
     pub(crate) doc: Option<Document>,
@@ -167,8 +197,8 @@ impl DocState {
     /// The `IllegalArgumentException` of building a field.
     pub fn new(reuse_fields: bool, ft: &Arc<FieldType>, body_ft: &Arc<FieldType>) -> Result<Self> {
         if reuse_fields {
-            let mut fields = HashMap::new();
-            let mut numeric_fields = HashMap::new();
+            let mut fields = FieldMap::default();
+            let mut numeric_fields = FieldMap::default();
             // Initialize the map with the default fields.
             fields.insert(
                 DocMaker::BODY_FIELD.to_string(),
@@ -263,6 +293,63 @@ impl DocState {
         )?));
         fields.insert(name.to_string(), f.clone());
         Ok(f)
+    }
+
+    /// Runs `f` on [`get_field`](Self::get_field)`(name, ft)`, borrowing a
+    /// reused field from the map rather than cloning its handle.
+    ///
+    /// PERF: the caller adds the field to the document through
+    /// [`DocField::indexable`], which takes the one reference the document
+    /// needs; the clone `get_field` returns was a second, port-only
+    /// reference count round trip per field and document (rmp #679).
+    fn with_field<R>(
+        &mut self,
+        name: &str,
+        ft: &Arc<FieldType>,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.fields.as_ref().expect("reuseFields").get(name) {
+                return f(field);
+            }
+        }
+        let field = self.get_field(name, ft)?;
+        f(&field)
+    }
+
+    /// [`with_field`](Self::with_field) with the field type built only when
+    /// the field is: Java builds `ft` before `getField`, which ignores it for
+    /// a reused field, so building it is unobservable there.
+    fn with_field_lazy_type<R>(
+        &mut self,
+        name: &str,
+        ft: impl FnOnce() -> Result<Arc<FieldType>>,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.fields.as_ref().expect("reuseFields").get(name) {
+                return f(field);
+            }
+        }
+        let field = self.get_field(name, &ft()?)?;
+        f(&field)
+    }
+
+    /// [`with_field`](Self::with_field) for
+    /// [`get_numeric_field`](Self::get_numeric_field).
+    fn with_numeric_field<R>(
+        &mut self,
+        name: &str,
+        numeric_type: NumericType,
+        f: impl FnOnce(&DocField) -> Result<R>,
+    ) -> Result<R> {
+        if self.reuse_fields {
+            if let Some(field) = self.numeric_fields.as_ref().and_then(|m| m.get(name)) {
+                return f(field);
+            }
+        }
+        let field = self.get_numeric_field(name, numeric_type)?;
+        f(&field)
     }
 
     /// `getNumericField(String name, Class<? extends Number> numericType)`.
@@ -478,9 +565,6 @@ impl DocMaker {
         doc.clear();
 
         // Set ID_FIELD
-        let ft = FieldType::new_from(&*val_type);
-        ft.set_stored(true)?;
-        let id_field = ds.get_field(Self::ID_FIELD, &Arc::new(ft))?;
         let id = {
             let mut s = self.settings();
             let limit = s.update_doc_id_limit;
@@ -496,8 +580,19 @@ impl DocMaker {
                 }
             }
         };
-        id_field.set_string_value(id.to_string())?;
-        doc.add_shared(id_field.indexable());
+        // `FieldType ft = new FieldType(valType); ft.setStored(true);`
+        // (`DocMaker.java:226-229`), built when the field is.
+        // PERF: no field type built and dropped per document.
+        let id_ft = || {
+            let ft = FieldType::new_from(&*val_type);
+            ft.set_stored(true)?;
+            Ok(Arc::new(ft))
+        };
+        ds.with_field_lazy_type(Self::ID_FIELD, id_ft, |id_field| {
+            id_field.set_string_value(id.to_string())?;
+            doc.add_shared(id_field.indexable());
+            Ok(())
+        })?;
 
         // Set NAME_FIELD
         let name = doc_data.get_name().unwrap_or("").to_string();
@@ -506,9 +601,11 @@ impl DocMaker {
         } else {
             format!("{name}_{cnt}")
         };
-        let name_field = ds.get_field(Self::NAME_FIELD, &val_type)?;
-        name_field.set_string_value(name)?;
-        doc.add_shared(name_field.indexable());
+        ds.with_field(Self::NAME_FIELD, &val_type, |name_field| {
+            name_field.set_string_value(name)?;
+            doc.add_shared(name_field.indexable());
+            Ok(())
+        })?;
 
         // Set DATE_FIELD
         let util = match self.date_parsers.get() {
@@ -529,16 +626,20 @@ impl DocMaker {
             }
             None => String::new(),
         };
-        let date_string_field = ds.get_field(Self::DATE_FIELD, &val_type)?;
-        date_string_field.set_string_value(date_string)?;
-        doc.add_shared(date_string_field.indexable());
+        ds.with_field(Self::DATE_FIELD, &val_type, |date_string_field| {
+            date_string_field.set_string_value(date_string)?;
+            doc.add_shared(date_string_field.indexable());
+            Ok(())
+        })?;
 
         // just set to right now
         let date = date.unwrap_or_else(Date::now);
 
-        let date_field = ds.get_numeric_field(Self::DATE_MSEC_FIELD, NumericType::Long)?;
-        date_field.set_long_value(date.get_time())?;
-        doc.add_shared(date_field.indexable());
+        ds.with_numeric_field(Self::DATE_MSEC_FIELD, NumericType::Long, |date_field| {
+            date_field.set_long_value(date.get_time())?;
+            doc.add_shared(date_field.indexable());
+            Ok(())
+        })?;
 
         util.cal.set_time(date);
         let sec = util.cal.get(calendar::HOUR_OF_DAY)? * 3600
@@ -546,42 +647,84 @@ impl DocMaker {
             + util.cal.get(calendar::SECOND)?;
         drop(util);
 
-        let time_sec_field = ds.get_numeric_field(Self::TIME_SEC_FIELD, NumericType::Integer)?;
-        time_sec_field.set_int_value(sec)?;
-        doc.add_shared(time_sec_field.indexable());
+        ds.with_numeric_field(
+            Self::TIME_SEC_FIELD,
+            NumericType::Integer,
+            |time_sec_field| {
+                time_sec_field.set_int_value(sec)?;
+                doc.add_shared(time_sec_field.indexable());
+                Ok(())
+            },
+        )?;
 
         // Set TITLE_FIELD
         // The field holds the Java String; Lucene indexes it as
         // `UnicodeUtil.UTF16toUTF8` of it.
         let title = doc_data.get_title_string().unwrap_or_default();
-        let title_field = ds.get_field(Self::TITLE_FIELD, &val_type)?;
-        title_field.set_string_value(title)?;
-        doc.add_shared(title_field.indexable());
+        ds.with_field(Self::TITLE_FIELD, &val_type, |title_field| {
+            title_field.set_string_value(title)?;
+            doc.add_shared(title_field.indexable());
+            Ok(())
+        })?;
 
-        if let Some(body) = doc_data.get_body().filter(|b| !b.is_empty()) {
-            let body: Vec<u16> = body.to_vec();
-            let bdy: &[u16];
-            if size <= 0 || size as usize >= body.len() {
-                bdy = &body; // use all
-                doc_data.set_body_utf16(Some(Vec::new())); // nothing left
-            } else {
-                // attempt not to break words - if whitespace found within next 20 chars...
-                let mut n = size - 1;
-                while n < size + 20 && (n as usize) < body.len() {
-                    if rucene_queryparser::jdk::character::is_whitespace(i32::from(
-                        body[n as usize],
-                    )) {
-                        size = n;
-                        break;
-                    }
-                    n += 1;
-                }
-                bdy = &body[..size as usize]; // use part
-                doc_data.set_body_utf16(Some(body[size as usize..].to_vec())); // some left
+        // `body != null && body.length() > 0`, then `size <= 0 || size >=
+        // body.length()`.
+        let body_present = doc_data.body().is_some_and(|body| !body.is_empty());
+        let use_all = body_present
+            && (size <= 0
+                || doc_data
+                    .body()
+                    .is_some_and(|body| body.utf16_len_at_most(size as usize)));
+        if use_all {
+            // use all: `body` itself, which leaves nothing (`DocMaker.java:296-299`).
+            // PERF: a body set as Rust text is used as it is, with no round
+            // trip through UTF-16 (see `DocData`'s `JavaText`).
+            let body = doc_data
+                .take_body()
+                .expect("INVARIANT: checked non-empty above");
+            doc_data.set_body_utf16(Some(Vec::new())); // nothing left
+            let stored_bytes = store_bytes.then(|| match body.text() {
+                // `String.getBytes(UTF_8)` of text that holds no lone
+                // surrogate is its UTF-8.
+                Some(text) => text.as_bytes().to_vec(),
+                None => jdk::string_get_bytes_utf8(&body.clone().take_units()),
+            });
+            let text = body.into_text();
+            ds.with_field(Self::BODY_FIELD, &body_val_type, |body_field| {
+                body_field.set_string_value(text)?;
+                doc.add_shared(body_field.indexable());
+                Ok(())
+            })?;
+            if let Some(stored_bytes) = stored_bytes {
+                let stored = Arc::new(StringField::type_stored().clone());
+                let bytes_field = ds.get_field(Self::BYTES_FIELD, &stored)?;
+                bytes_field.set_bytes_value(&stored_bytes)?;
+                doc.add_shared(bytes_field.indexable());
             }
-            let body_field = ds.get_field(Self::BODY_FIELD, &body_val_type)?;
-            body_field.set_string_value(jdk::utf16_to_string(bdy))?;
-            doc.add_shared(body_field.indexable());
+        } else if body_present {
+            // PERF: the body is moved out of `doc_data` rather than copied
+            // first; the leftover is one copy, as Java's `body.substring(size)`.
+            let mut body = doc_data
+                .take_body_utf16()
+                .expect("INVARIANT: checked non-empty above");
+            // `0 < size < body.length()`: attempt not to break words - if
+            // whitespace found within next 20 chars...
+            let mut n = size - 1;
+            while n < size + 20 && (n as usize) < body.len() {
+                if rucene_queryparser::jdk::character::is_whitespace(i32::from(body[n as usize])) {
+                    size = n;
+                    break;
+                }
+                n += 1;
+            }
+            let left = body.split_off(size as usize); // use part
+            doc_data.set_body_utf16(Some(left)); // some left
+            let bdy: &[u16] = &body;
+            ds.with_field(Self::BODY_FIELD, &body_val_type, |body_field| {
+                body_field.set_string_value(jdk::utf16_to_string(bdy))?;
+                doc.add_shared(body_field.indexable());
+                Ok(())
+            })?;
 
             if store_bytes {
                 let stored = Arc::new(StringField::type_stored().clone());
@@ -594,9 +737,11 @@ impl DocMaker {
         if index_properties {
             if let Some(props) = doc_data.get_props() {
                 for (key, value) in props.entries() {
-                    let f = ds.get_field(key, &val_type)?;
-                    f.set_string_value(value.to_string())?;
-                    doc.add_shared(f.indexable());
+                    ds.with_field(key, &val_type, |f| {
+                        f.set_string_value(value.to_string())?;
+                        doc.add_shared(f.indexable());
+                        Ok(())
+                    })?;
                 }
                 doc_data.set_props(None);
             }

@@ -574,17 +574,13 @@ impl PartialOrd for BytesRef {
 }
 
 impl Ord for BytesRef {
+    /// `BytesRef.compareTo` (`BytesRef.java:161-169`): `Arrays.compareUnsigned`
+    /// over the two ranges, unsigned bytes first, then length.
+    ///
+    /// PERF: `[u8]`'s own ordering is exactly that one and compares through
+    /// `memcmp`, word-wide, as the JDK intrinsic does, instead of a byte loop.
     fn cmp(&self, other: &Self) -> Ordering {
-        let a = self.slice();
-        let b = other.slice();
-        let len = a.len().min(b.len());
-        for i in 0..len {
-            let ord = a[i].cmp(&b[i]);
-            if ord != Ordering::Equal {
-                return ord;
-            }
-        }
-        a.len().cmp(&b.len())
+        self.slice().cmp(other.slice())
     }
 }
 
@@ -751,9 +747,20 @@ impl BytesRefBuilder {
     /// the one [`copy_chars`](Self::copy_chars) gives for the same text,
     /// without first collecting it into a `String`.
     pub fn copy_char_array(&mut self, text: &[char]) {
+        debug_assert!(self.inner.offset == 0);
+        // PERF: an all-ASCII term (UTF-16 length = text length) is one byte
+        // per char; same buffer growth and bytes as the general path below.
+        if text.iter().all(char::is_ascii) {
+            self.grow_no_copy(UnicodeUtil::max_utf8_length(text.len()));
+            for (out, &c) in self.inner.bytes.iter_mut().zip(text) {
+                *out = c as u8;
+            }
+            self.inner.offset = 0;
+            self.inner.length = text.len();
+            return;
+        }
         let utf16_length: usize = text.iter().map(|c| c.len_utf16()).sum();
         self.grow_no_copy(UnicodeUtil::max_utf8_length(utf16_length));
-        debug_assert!(self.inner.offset == 0);
         let mut length = 0;
         for c in text {
             length += c.encode_utf8(&mut self.inner.bytes[length..]).len();
@@ -2434,13 +2441,7 @@ impl Thrown {
     /// as an `Error`, so it is rethrown and never swallowed.
     fn is_java_error(&self) -> bool {
         match self {
-            Self::Error(e) => matches!(
-                e,
-                LuceneError {
-                    kind: LuceneErrorKind::AssertionError(_),
-                    ..
-                }
-            ),
+            Self::Error(e) => matches!(&e.kind, LuceneErrorKind::AssertionError(_)),
             Self::Panic(_) => true,
         }
     }
@@ -6184,6 +6185,42 @@ pub fn java_float_compare(a: f32, b: f32) -> std::cmp::Ordering {
 
 #[cfg(test)]
 mod tests {
+
+    /// `BytesRef::cmp` orders as the byte-by-byte unsigned comparison
+    /// followed by the length, for every length pair and difference position,
+    /// including bytes above 0x7F and views at non-zero offsets.
+    #[test]
+    fn bytes_ref_cmp_matches_the_byte_loop() {
+        fn reference(a: &[u8], b: &[u8]) -> std::cmp::Ordering {
+            for i in 0..a.len().min(b.len()) {
+                let ord = a[i].cmp(&b[i]);
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            a.len().cmp(&b.len())
+        }
+        for len_a in 0..20usize {
+            for len_b in [0usize, 1, 7, 8, 9, 19] {
+                let a: Vec<u8> = (0..len_a).map(|i| (i * 37 + 200) as u8).collect();
+                let base: Vec<u8> = (0..len_b).map(|i| (i * 37 + 200) as u8).collect();
+                for flip in 0..=len_b {
+                    let mut b = base.clone();
+                    if flip < len_b {
+                        b[flip] = b[flip].wrapping_add(0x81);
+                    }
+                    let mut padded = vec![0x55u8; 3];
+                    padded.extend_from_slice(&b);
+                    let ra = BytesRef::new(a.clone());
+                    let mut rb = BytesRef::new(padded);
+                    rb.offset = 3;
+                    rb.length = b.len();
+                    assert_eq!(ra.cmp(&rb), reference(&a, &b), "{len_a} {len_b} {flip}");
+                    assert_eq!(rb.cmp(&ra), reference(&b, &a), "{len_a} {len_b} {flip}");
+                }
+            }
+        }
+    }
     use std::fs;
     /// `new FixedBitSet(new long[1], 65)` throws Java's
     /// `IllegalArgumentException` (`FixedBitSet.java:162-167`). Measured
@@ -6191,11 +6228,9 @@ mod tests {
     /// `The given long array is too small  to hold 65 bits`, two spaces.
     #[test]
     fn fixed_bit_set_from_too_few_words_is_lucenes_illegal_argument() {
-        assert!(matches!(
-            super::FixedBitSet::from_bits(vec![0u64], 65),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. })
-                if message == "The given long array is too small  to hold 65 bits"
-        ));
+        assert!(
+            matches!(super::FixedBitSet::from_bits(vec![0u64], 65), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::IllegalArgument { ref message, .. } if message == "The given long array is too small  to hold 65 bits"))
+        );
     }
 
     /// `ArrayUtil.parseInt` reads digits with `Character.digit`, and refuses
@@ -6212,11 +6247,9 @@ mod tests {
             super::ArrayUtil::parse_int_radix(&fullwidth, 0, 2, 16).unwrap(),
             127
         );
-        assert!(matches!(
-            super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::Unchecked { class, message: None, .. }, .. })
-                if class == "java.lang.NumberFormatException"
-        ));
+        assert!(
+            matches!(super::ArrayUtil::parse_int_radix(&['1'], 0, 1, 1), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::Unchecked { class, message: None, .. } if *class == "java.lang.NumberFormatException"))
+        );
     }
 
     /// `UnicodeUtil.newString` refuses a code point past `0x10FFFF` with a
@@ -6225,10 +6258,9 @@ mod tests {
     /// item 25): `IllegalArgumentException: null`.
     #[test]
     fn unicode_util_new_string_refuses_an_invalid_code_point_without_a_message() {
-        assert!(matches!(
-            super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1),
-            Err(super::LuceneError { kind: super::LuceneErrorKind::IllegalArgument { ref message, .. }, .. }) if message.is_empty()
-        ));
+        assert!(
+            matches!(super::unicode_util::UnicodeUtil::new_string(&[0x11_0000], 0, 1), Err(ref __lerr) if matches!(&__lerr.kind, super::LuceneErrorKind::IllegalArgument { ref message, .. } if message.is_empty()))
+        );
     }
 
     /// `new LongsRef(long[], int, int)` only asserts `isValid()`
@@ -6467,7 +6499,7 @@ mod tests {
                 )
                 .unwrap_err();
                 assert!(
-                    matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(m), .. } if m == "integer overflow"),
+                    matches!(&error.kind, LuceneErrorKind::Arithmetic(m) if m == "integer overflow"),
                     "{error:?}"
                 );
             }
@@ -6816,12 +6848,12 @@ mod tests {
         let mut result = [0u8; 2];
         let error = NumericUtils::subtract(2, 0, &[0, 1], &[0, 2], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a < b"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "a < b"),
             "{error:?}"
         );
         let error = NumericUtils::add(2, 0, &[0xff, 0xff], &[0, 1], &mut result).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "a + b overflows bytesPerDim=2"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "a + b overflows bytesPerDim=2"),
             "{error:?}"
         );
         NumericUtils::subtract(2, 0, &[0x12, 0x05], &[0x10, 0x00], &mut result).unwrap();
@@ -6870,10 +6902,7 @@ mod tests {
         let error =
             IOUtils::close([IOUtils::closeable(first), IOUtils::closeable(second)]).unwrap_err();
         match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            } => {
+            ref __lerr if let LuceneErrorKind::Io(e) = &__lerr.kind => {
                 assert_eq!(e.to_string(), "first close failed");
                 assert_eq!(e.kind(), io::ErrorKind::Other);
             }
@@ -6907,18 +6936,11 @@ mod tests {
 
     fn java_class_and_message(error: &LuceneError) -> String {
         let message = match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(e),
-                ..
-            } => e.to_string(),
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            } => message.clone(),
-            LuceneError {
-                kind: LuceneErrorKind::AssertionError(m),
-                ..
-            } => m.clone(),
+            __lerr if let LuceneErrorKind::Io(e) = &__lerr.kind => e.to_string(),
+            __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                message.clone()
+            }
+            __lerr if let LuceneErrorKind::AssertionError(m) = &__lerr.kind => m.clone(),
             other => panic!("{other:?}"),
         };
         format!("{}({message})", error.java_simple_name())
@@ -7128,12 +7150,12 @@ mod tests {
         fs::set_permissions(&file, permissions).unwrap();
         let error = IOUtils::fsync(&file, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         let error = IOUtils::fsync(tmp.path().join("missing"), false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::NotFound),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::NotFound),
             "{error:?}"
         );
         IOUtils::fsync(tmp.path(), true).unwrap();
@@ -7154,7 +7176,7 @@ mod tests {
         let dir = crate::store::FSDirectory::open(tmp.path()).unwrap();
         let error = dir.sync(&["ro"]).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::PermissionDenied),
+            matches!(&error.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::PermissionDenied),
             "{error:?}"
         );
         dir.sync_metadata().unwrap();
@@ -7219,7 +7241,7 @@ mod tests {
         );
         let error = EvenBits(true).apply_mask(&mut set, 0).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Other(m), .. } if m == "exiting"),
+            matches!(&error.kind, LuceneErrorKind::Other(m) if m == "exiting"),
             "{error:?}"
         );
     }

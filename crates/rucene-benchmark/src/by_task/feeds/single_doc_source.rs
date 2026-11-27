@@ -19,7 +19,7 @@
 //! `org.apache.lucene.benchmark.byTask.feeds`.
 
 use std::any::Any;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use rucene::error::Result;
 
@@ -28,6 +28,9 @@ use crate::by_task::feeds::content_source::ContentSource;
 use crate::by_task::feeds::doc_data::DocData;
 use crate::by_task::feeds::no_more_data_exception::NoMoreDataException;
 use crate::jdk;
+
+/// [`DOC_TEXT`] as the UTF-16 code units of the Java String.
+static DOC_TEXT_UTF16: LazyLock<Vec<u16>> = LazyLock::new(|| DOC_TEXT.encode_utf16().collect());
 
 /// `DOC_TEXT`.
 pub(crate) const DOC_TEXT: &str = concat!(
@@ -102,10 +105,14 @@ impl ContentItemsSource for SingleDocSource {
 impl ContentSource for SingleDocSource {
     fn get_next_doc_data(&self, doc_data: &mut DocData) -> Result<()> {
         let id = self.newdocid()?;
-        self.base.add_bytes(jdk::utf16_len(DOC_TEXT) as i64);
+        // PERF: Java's `setBody(DOC_TEXT)` stores a reference to the constant
+        // String; the port's body is an owned UTF-16 copy, so it copies the
+        // constant encoded once rather than encoding it again per document.
+        let doc_text = &*DOC_TEXT_UTF16;
+        self.base.add_bytes(doc_text.len() as i64);
         doc_data.clear();
         doc_data.set_name(Some(format!("doc{id}")));
-        doc_data.set_body(Some(DOC_TEXT.to_string()));
+        doc_data.set_body_utf16(Some(doc_text.clone()));
         Ok(())
     }
 }

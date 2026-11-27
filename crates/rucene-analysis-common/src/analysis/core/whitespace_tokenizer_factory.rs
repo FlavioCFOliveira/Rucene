@@ -176,4 +176,30 @@ impl TokenizerFactory for WhitespaceTokenizerFactory {
             _ => rucene::store::java_nio_file::throw_unchecked("java.lang.AssertionError", None),
         }
     }
+
+    /// `create()` as an owned stage: the same rule's `CharTokenizer` logic
+    /// with the same maximum token length
+    /// (`WhitespaceTokenizerFactory.java:87-97`).
+    fn owned_tokenizer(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenizer>>> {
+        use crate::analysis::util::char_tokenizer::OwnedCharTokenizer;
+        Some(match self.rule.as_str() {
+            Self::RULE_JAVA => CharTokenizerAdapter::with_max_token_len(
+                WhitespaceTokenizerLogic,
+                self.max_token_len,
+            )
+            .map(|adapter| {
+                Box::new(OwnedCharTokenizer::new(adapter))
+                    as Box<dyn rucene::analysis::owned::OwnedTokenizer>
+            }),
+            Self::RULE_UNICODE => CharTokenizerAdapter::with_max_token_len(
+                UnicodeWhitespaceTokenizerLogic,
+                self.max_token_len,
+            )
+            .map(|adapter| {
+                Box::new(OwnedCharTokenizer::new(adapter))
+                    as Box<dyn rucene::analysis::owned::OwnedTokenizer>
+            }),
+            _ => rucene::store::java_nio_file::throw_unchecked("java.lang.AssertionError", None),
+        })
+    }
 }

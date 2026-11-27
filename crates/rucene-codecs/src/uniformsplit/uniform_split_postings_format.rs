@@ -356,10 +356,11 @@ mod tests {
 
     fn message(r: Result<UniformSplitPostingsFormat>) -> String {
         match r {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-                ..
-            }) => m,
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message: m, .. } = &__lerr.kind =>
+            {
+                m.clone()
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         }
     }

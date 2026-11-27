@@ -339,10 +339,9 @@ impl<G: ManagedReference + ?Sized + 'static> ReferenceManager<G> {
     pub fn close(&self) -> Result<()> {
         match self.swap_reference(None) {
             Ok(()) => self.source.after_close(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            }) => Ok(()),
+            Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }) => {
+                Ok(())
+            }
             Err(e) => Err(e),
         }
     }

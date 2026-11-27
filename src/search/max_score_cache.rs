@@ -18,13 +18,16 @@ use crate::search::similarities::SimScorer;
 /// [`ImpactsSource`] it reads from, which is the very
 /// [`ImpactsEnum`](crate::index::ImpactsEnum) the enclosing scorer iterates.
 /// Rust forbids that aliasing, so the source is passed to every method instead
-/// of being stored. For the same reason the
-/// [`BulkSimScorer`](crate::search::similarities::BulkSimScorer) is built on
-/// each bulk computation rather than once in the constructor: this crate's
-/// `as_bulk_sim_scorer` borrows the similarity scorer, which a field cannot
-/// hold beside the scorer it borrows from. The scores produced are identical.
+/// of being stored. The
+/// [`BulkSimScorer`](crate::search::similarities::BulkSimScorer) is built once,
+/// in the constructor, as Java's is (`MaxScoreCache.java:47`), through
+/// [`SimScorer::owned_bulk_sim_scorer`]; a scorer without a specialised bulk
+/// form falls back to the borrowing `as_bulk_sim_scorer` on each computation.
+/// The scores produced are identical.
 pub struct MaxScoreCache {
     scorer: Box<dyn SimScorer>,
+    /// `MaxScoreCache.bulkScorer`; `None` when the scorer has no owned form.
+    bulk_scorer: Option<Box<dyn crate::search::similarities::BulkSimScorer + Send + Sync>>,
     global_max_score: f32,
     max_score_cache: Vec<f32>,
     max_score_cache_up_to: Vec<i32>,
@@ -49,6 +52,7 @@ impl MaxScoreCache {
     pub fn new(scorer: Box<dyn SimScorer>) -> Self {
         let global_max_score = scorer.score(f32::MAX, 1);
         Self {
+            bulk_scorer: scorer.owned_bulk_sim_scorer(),
             scorer,
             global_max_score,
             max_score_cache: Vec::new(),
@@ -98,10 +102,17 @@ impl MaxScoreCache {
             self.freq_spare.resize(size, 0.0);
             self.score_spare.resize(size, 0.0);
         }
-        for i in 0..size {
-            self.freq_spare[i] = impacts.freqs[i] as f32;
-        }
-        {
+        if let Some(bulk_scorer) = self.bulk_scorer.as_mut() {
+            // `spare[i] = impacts.freqs[i]; bulkScorer.score(size, spare,
+            // impacts.norms, spare)` (`MaxScoreCache.java:79-82`).
+            for i in 0..size {
+                self.score_spare[i] = impacts.freqs[i] as f32;
+            }
+            bulk_scorer.score_in_place(size, &mut self.score_spare, &impacts.norms);
+        } else {
+            for i in 0..size {
+                self.freq_spare[i] = impacts.freqs[i] as f32;
+            }
             let mut bulk_scorer = self.scorer.as_bulk_sim_scorer();
             bulk_scorer.score(
                 size,

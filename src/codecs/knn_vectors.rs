@@ -2515,13 +2515,9 @@ mod tests {
     fn empty_knn_vectors_writer_lifecycle() {
         let mut writer = EmptyKnnVectorsWriter;
         let field = FieldInfo::default();
-        assert!(matches!(
-            writer.add_field(&field),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(writer.add_field(&field), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         writer.flush(10, None).unwrap();
         writer.finish().unwrap();
         writer.close().unwrap();
@@ -2532,37 +2528,21 @@ mod tests {
         let mut reader = EmptyKnnVectorsReader;
         // `KnnVectorsFormat.EMPTY`'s reader throws from both value accessors
         // (`codecs/KnnVectorsFormat.java:130-138`).
-        assert!(matches!(
-            reader.get_float_vector_values("f"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            reader.get_byte_vector_values("f"),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(reader.get_float_vector_values("f"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(reader.get_byte_vector_values("f"), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         let mut collector = EmptyKnnCollector;
         let mut accept_docs = from_live_docs(None, 10).unwrap();
         // Both searches throw (`codecs/KnnVectorsFormat.java:142-153`).
-        assert!(matches!(
-            reader.search("f", &[1.0, 2.0], &mut collector, &mut accept_docs),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            reader.search_byte("f", &[1, 2], &mut collector, &mut accept_docs),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(reader.search("f", &[1.0, 2.0], &mut collector, &mut accept_docs), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(reader.search_byte("f", &[1, 2], &mut collector, &mut accept_docs), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         // `getOffHeapByteSize` is `Map.of()` and `checkIntegrity` does
         // nothing (`codecs/KnnVectorsFormat.java:128-129, 153-156`) — rmp #231.
         assert!(reader
@@ -2596,13 +2576,9 @@ mod tests {
         );
         // `KnnVectorsFormat.EMPTY` throws when written
         // (`codecs/KnnVectorsFormat.java:120-123`).
-        assert!(matches!(
-            format.fields_writer(&write_state),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(format.fields_writer(&write_state), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
 
         let dir_ref: &dyn crate::store::Directory = &*dir;
         let read_state = SegmentReadState::new(dir_ref, &segment_info, &field_infos, context);
@@ -2646,10 +2622,9 @@ mod tests {
         let bytes = MergedByteVectorValues::new(Vec::new(), &state).unwrap();
         for result in [floats.try_dimension(), bytes.try_dimension()] {
             match result {
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { message, .. },
-                    ..
-                }) => {
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+                {
                     assert_eq!(message, "Index 0 out of bounds for length 0")
                 }
                 other => panic!("expected an IllegalArgument, got {other:?}"),
@@ -2706,38 +2681,25 @@ mod tests {
         let mut iterator = floats.iterator().unwrap();
         assert_eq!(iterator.cost(), 2);
         assert_eq!(iterator.doc_id(), -1);
-        assert!(matches!(
-            iterator.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(iterator.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert_eq!(iterator.next_doc().unwrap(), 0);
         match floats.vector_value(1) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "only supports forward iteration with a single iterator: ord=1, lastOrd=0"
-            ),
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+                assert_eq!(
+                    message,
+                    "only supports forward iteration with a single iterator: ord=1, lastOrd=0"
+                )
+            }
             other => panic!("expected the forward-only refusal, got {other:?}"),
         }
-        assert!(matches!(
-            floats.copy(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            floats.copy_float(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(floats.copy(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(floats.copy_float(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         assert_eq!(iterator.next_doc().unwrap(), 1);
         assert_eq!(iterator.next_doc().unwrap(), NO_MORE_DOCS);
         assert_eq!(iterator.index(), NO_MORE_DOCS);
@@ -2755,10 +2717,7 @@ mod tests {
         let bytes = MergedByteVectorValues::new(vec![byte_sub], &state).unwrap();
         bytes.iterator().unwrap().next_doc().unwrap();
         match bytes.vector_value(1) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
                 assert_eq!(message, "only supports forward iteration: ord=1, lastOrd=0")
             }
             other => panic!("expected the forward-only refusal, got {other:?}"),
@@ -2974,10 +2933,9 @@ mod tests {
             false,
         );
         match MergedVectorValues::merge_float_vector_values(&field, &state) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::UnsupportedOperation { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "Cannot merge vectors encoded as [BYTE] as FLOAT32")
             }
             other => panic!(
@@ -3430,20 +3388,21 @@ mod tests {
         for (doc, len) in [(0, 2), (0, 3), (1, 3), (1, 3)] {
             out.push(match fw.add_value(doc, vec![0.0; len]) {
                 Ok(()) => format!("add {doc} ok"),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { message, .. },
-                    ..
-                }) => format!("add {doc} {message}"),
+                Err(ref __lerr)
+                    if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+                {
+                    format!("add {doc} {message}")
+                }
                 // `System.arraycopy`'s `ArrayIndexOutOfBoundsException`.
-                Err(LuceneError {
-                    kind:
-                        LuceneErrorKind::Unchecked {
-                            class: "java.lang.ArrayIndexOutOfBoundsException",
-                            message: Some(message),
-                            ..
-                        },
-                    ..
-                }) => format!("add {doc} {message}"),
+                Err(ref __lerr)
+                    if let LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(message),
+                        ..
+                    } = &__lerr.kind =>
+                {
+                    format!("add {doc} {message}")
+                }
                 Err(other) => panic!("unexpected error {other:?}"),
             });
         }

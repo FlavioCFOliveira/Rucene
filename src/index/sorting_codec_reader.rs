@@ -4731,13 +4731,9 @@ mod tests {
         // (SortingCodecReader.java:585-595).
         let mut collector = crate::search::knn::TopKnnCollector::new(1, i64::MAX);
         let mut accept_docs = crate::search::from_live_docs(None, 5).unwrap();
-        assert!(matches!(
-            sorted.search_nearest_vectors("v", &[0.0, 1.0], &mut collector, &mut accept_docs),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(sorted.search_nearest_vectors("v", &[0.0, 1.0], &mut collector, &mut accept_docs), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     /// `wrap` rejects a doc map whose size is not the reader's `maxDoc`
@@ -4747,13 +4743,9 @@ mod tests {
         let composite = SlowCompositeCodecReaderWrapper::wrap(two_segments()).unwrap();
         let reverse: crate::index::index_sorter::DocComparator = Box::new(|a, b| b.cmp(&a));
         let doc_map = Arc::new(Sorter::sort(4, &reverse).unwrap());
-        assert!(matches!(
-            SortingCodecReader::wrap(composite, doc_map, None),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(SortingCodecReader::wrap(composite, doc_map, None), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     /// A postings producer with one field, counting how often its terms are
@@ -4850,21 +4842,13 @@ mod tests {
         let doc_map = Arc::new(Sorter::sort(5, &reverse).unwrap());
         let sorted = SortingCodecReader::wrap(composite, doc_map, None).unwrap();
         let mut numeric = sorted.get_numeric_doc_values("n").unwrap().unwrap();
-        assert!(matches!(
-            numeric.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(numeric.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
         let mut values = sorted.get_sorted_doc_values("s").unwrap().unwrap();
-        assert!(matches!(
-            values.advance(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(values.advance(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     /// `SlowCodecReaderWrapper`'s norms producer answers the leaf's

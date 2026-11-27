@@ -580,6 +580,19 @@ impl Query for BooleanQuery {
         )?))
     }
 
+    /// The weight keeps the shared query itself, as Java's `BooleanWeight`
+    /// references `BooleanQuery.this`.
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        Ok(Arc::new(BooleanWeight::from_shared(
+            self, searcher, score_mode, boost,
+        )?))
+    }
+
     fn rewrite(&self, searcher: &IndexSearcher) -> Result<Option<Arc<dyn Query>>> {
         if self.clauses.is_empty() {
             return Ok(Some(Arc::new(MatchNoDocsQuery::new("empty BooleanQuery"))));

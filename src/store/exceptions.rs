@@ -74,13 +74,7 @@ impl AlreadyClosedException {
     ///
     /// This is the Rust counterpart of `catch (AlreadyClosedException e)`.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            }
-        )
+        matches!(&error.kind, LuceneErrorKind::AlreadyClosed { .. })
     }
 }
 
@@ -117,13 +111,7 @@ impl LockObtainFailedException {
     /// which [`SleepingLockWrapper`](super::SleepingLockWrapper) and
     /// [`LockStressTest`](super::LockStressTest) both rely on.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { .. },
-                ..
-            }
-        )
+        matches!(&error.kind, LuceneErrorKind::LockObtainFailed { .. })
     }
 }
 
@@ -157,12 +145,6 @@ impl LockReleaseFailedException {
     ///
     /// This is the Rust counterpart of `catch (LockReleaseFailedException e)`.
     pub fn is(error: &LuceneError) -> bool {
-        matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::LockReleaseFailed { .. },
-                ..
-            }
-        )
+        matches!(&error.kind, LuceneErrorKind::LockReleaseFailed { .. })
     }
 }

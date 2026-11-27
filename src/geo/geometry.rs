@@ -2070,10 +2070,11 @@ mod signed_zero_equality_tests {
     #[test]
     fn xy_circle_rejects_a_bad_radius_with_java_messages() {
         let message = |r: f32| match XYCircle::new(18.0, 19.0, r) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-                ..
-            }) => m,
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message: m, .. } = &__lerr.kind =>
+            {
+                m.clone()
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };
         assert_eq!(

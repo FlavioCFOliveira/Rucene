@@ -1538,13 +1538,7 @@ impl IndexWriter {
     pub fn on_tragic_event(&self, error: &LuceneError, location: &str) {
         // This is not supposed to be tragic: `MergeAbortedException` is the
         // merge being aborted deliberately (`IndexWriter.java:5853-5854`).
-        debug_assert!(!matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::MergeAborted(_),
-                ..
-            }
-        ));
+        debug_assert!(!matches!(&error.kind, LuceneErrorKind::MergeAborted(_)));
         if self.info_stream.is_enabled(IW) {
             // `"hit tragic " + tragedy.getClass().getSimpleName() + " inside "
             // + location` (`IndexWriter.java:5857-5860`).
@@ -2175,13 +2169,7 @@ impl IndexWriter {
             .and_then(|seq_no| self.maybe_process_events(seq_no));
         // `IndexWriter.java:1588-1597`.
         if let Err(error) = &outcome {
-            if matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::AssertionError(_),
-                    ..
-                }
-            ) {
+            if matches!(&error.kind, LuceneErrorKind::AssertionError(_)) {
                 self.on_tragic_event(error, "updateBatch");
             }
             if self.info_stream.is_enabled(IW) {
@@ -3594,13 +3582,7 @@ impl IndexWriter {
         match throwable {
             Ok(error) => {
                 // The `finally` (`IndexWriter.java:2677-2683`).
-                if matches!(
-                    error,
-                    LuceneError {
-                        kind: LuceneErrorKind::AssertionError(_),
-                        ..
-                    }
-                ) {
+                if matches!(&error.kind, LuceneErrorKind::AssertionError(_)) {
                     // `catch (Throwable t1) { throwable.addSuppressed(t1); }`.
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         self.tragic_event(&error, "rollbackInternal")
@@ -6797,38 +6779,17 @@ fn sort_or_null(sort: Option<&Sort>) -> String {
 /// other variant stands for an unchecked exception.
 fn is_java_io_exception(error: &LuceneError) -> bool {
     matches!(
-        error,
-        LuceneError {
-            kind: LuceneErrorKind::Io(_),
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexFormatNotSupported(_),
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexFormatTooOld { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexFormatTooNew { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexNotFound(_),
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::NotFound(_),
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::LockObtainFailed { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::LockReleaseFailed { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::MergeAborted(_),
-            ..
-        }
+        &error.kind,
+        LuceneErrorKind::Io(_)
+            | LuceneErrorKind::CorruptIndex { .. }
+            | LuceneErrorKind::IndexFormatNotSupported(_)
+            | LuceneErrorKind::IndexFormatTooOld { .. }
+            | LuceneErrorKind::IndexFormatTooNew { .. }
+            | LuceneErrorKind::IndexNotFound(_)
+            | LuceneErrorKind::NotFound(_)
+            | LuceneErrorKind::LockObtainFailed { .. }
+            | LuceneErrorKind::LockReleaseFailed { .. }
+            | LuceneErrorKind::MergeAborted(_)
     )
 }
 
@@ -6949,10 +6910,7 @@ impl IndexWriter {
         let files = match info.files() {
             Ok(files) => Some(files),
             // OK
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            }) => None,
+            Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { .. }) => None,
             Err(error) => return Err(error),
         };
         if let Some(files) = files {
@@ -7671,14 +7629,7 @@ impl IndexWriter {
                 self.add_merge_exception(&mut state, merge);
             }
         }
-        if matches!(
-            error,
-            LuceneError {
-                kind: LuceneErrorKind::MergeAborted(_),
-                ..
-            }
-        ) && !merge.is_external
-        {
+        if matches!(&error.kind, LuceneErrorKind::MergeAborted(_)) && !merge.is_external {
             return Ok(());
         }
         Err(error)
@@ -8150,12 +8101,7 @@ impl IndexWriter {
     /// outcome is returned unchanged.
     fn catch_error_as_tragedy<T>(&self, outcome: Result<T>, location: &str) -> Result<T> {
         match outcome {
-            Err(
-                error @ LuceneError {
-                    kind: LuceneErrorKind::AssertionError(_),
-                    ..
-                },
-            ) => {
+            Err(error) if matches!(error.kind, LuceneErrorKind::AssertionError(_)) => {
                 self.tragic_event(&error, location)?;
                 Err(error)
             }
@@ -12076,13 +12022,7 @@ mod tests {
         // `IndexWriter.ensureOpen` runs it.
         let raced = writer.documents_writer.update_document(&doc, None);
         assert!(
-            matches!(
-                raced,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                })
-            ),
+            matches!(raced, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. })),
             "an add racing the rollback must fail with AlreadyClosed: {raced:?}"
         );
         assert_eq!(writer.documents_writer.num_docs(), 0);
@@ -12129,13 +12069,9 @@ mod tests {
         let added = writer
             .event_queue
             .add(Box::new(|w: &IndexWriter| w.publish_flushed_segments(true)));
-        assert!(matches!(
-            added,
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(added, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }))
+        );
     }
 
     /// `rollbackInternalNoCommit` restores the segments the writer recorded
@@ -12201,13 +12137,7 @@ mod tests {
             writer.closing.store(true, Ordering::Release);
             let refused = writer.enable_merges(&mut state);
             assert!(
-                matches!(
-                    refused,
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::AlreadyClosed { .. },
-                        ..
-                    })
-                ),
+                matches!(refused, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. })),
                 "{refused:?}"
             );
             assert!(
@@ -12233,13 +12163,7 @@ mod tests {
         let files: HashSet<String> = HashSet::from(["_0.fdt".to_string()]);
         let refused = writer.flush_notifications.delete_unused_files(&files);
         assert!(
-            matches!(
-                refused,
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                })
-            ),
+            matches!(refused, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. })),
             "{refused:?}"
         );
         assert!(
@@ -12294,8 +12218,7 @@ mod tests {
 
         let error = writer.commit().unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Io(io), .. }
-                if io.kind() == std::io::ErrorKind::NotFound && io.to_string() == lock_path),
+            matches!(&error.kind, LuceneErrorKind::Io(io) if io.kind() == std::io::ErrorKind::NotFound && io.to_string() == lock_path),
             "a NoSuchFileException whose message is {lock_path}, got {error:?}"
         );
         assert!(
@@ -12333,13 +12256,12 @@ mod tests {
 
         let error = writer.commit().unwrap_err();
         match &error {
-            LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            } => assert!(
-                message.starts_with("Unexpected lock file size: 1, (lock=NativeFSLock(path="),
-                "{message}"
-            ),
+            __lerr if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind => {
+                assert!(
+                    message.starts_with("Unexpected lock file size: 1, (lock=NativeFSLock(path="),
+                    "{message}"
+                )
+            }
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
         assert!(!dir
@@ -12382,10 +12304,7 @@ mod tests {
             tmp.path().canonicalize().unwrap().display()
         );
         match &error {
-            LuceneError {
-                kind: LuceneErrorKind::IndexNotFound(message),
-                ..
-            } => {
+            __lerr if let LuceneErrorKind::IndexNotFound(message) = &__lerr.kind => {
                 assert!(crate::store::matches_java_text(message, &java), "{message}")
             }
             other => panic!("an IndexNotFoundException, got {other:?}"),
@@ -12411,12 +12330,11 @@ mod tests {
         let dir: Arc<dyn Directory> = Arc::new(ByteBuffersDirectory::new());
         let first = IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()).unwrap();
         match IndexWriter::new(Arc::clone(&dir), IndexWriterConfig::new()) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(
-                    message,
+                    *message,
                     format!(
                         "lock instance already obtained: (dir={}, lockName=write.lock)",
                         dir.directory_to_string()
@@ -12424,7 +12342,7 @@ mod tests {
                 );
                 assert!(
                     crate::store::matches_java_text(
-                        &message,
+                        message,
                         "lock instance already obtained: (dir=ByteBuffersDirectory@{hash} \
                          lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}, \
                          lockName=write.lock)"
@@ -12514,8 +12432,7 @@ mod tests {
         config.set_index_commit(Some(commit));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "cannot use IndexWriterConfig.setIndexCommit() with OpenMode.CREATE"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "cannot use IndexWriterConfig.setIndexCommit() with OpenMode.CREATE"),
             "{error:?}"
         );
     }
@@ -12683,8 +12600,7 @@ mod tests {
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "cannot use IndexWriterConfig.setIndexCommit() when index has no commit"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "cannot use IndexWriterConfig.setIndexCommit() when index has no commit"),
             "{error:?}"
         );
         IndexReader::close(reader.as_ref()).unwrap();
@@ -12717,8 +12633,7 @@ mod tests {
             // `new IllegalArgumentException(..., ioe)` (`IndexWriter.java:1060-1064`):
             // the failed read of the missing commit is the cause.
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, cause: Some(cause) }, .. }
-                    if message.contains("the provided reader is stale: its prior commit file")
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, cause: Some(cause) } if message.contains("the provided reader is stale: its prior commit file")
                         && is_java_io_exception(cause)),
                 "{error:?}"
             );
@@ -13034,13 +12949,7 @@ mod tests {
             .add_indexes_dirs(&[Arc::clone(&d1), Arc::clone(&d2)])
             .unwrap_err();
         assert!(
-            matches!(
-                &error,
-                LuceneError {
-                    kind: LuceneErrorKind::LockObtainFailed { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::LockObtainFailed { .. }),
             "{error:?}"
         );
         let relock = d1
@@ -13538,8 +13447,7 @@ mod tests {
         config.set_index_commit(Some(commit));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }
-                if message == "this IndexReader is closed"),
+            matches!(&error.kind, LuceneErrorKind::AlreadyClosed { message, .. } if message == "this IndexReader is closed"),
             "{error:?}"
         );
         let relock = dir.obtain_lock(WRITE_LOCK_NAME).unwrap();
@@ -13565,8 +13473,7 @@ mod tests {
         config.set_index_commit(Some(Arc::from(reader.index_commit().unwrap())));
         let error = IndexWriter::new(Arc::clone(&dir), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "index must already have an initial commit to open from reader"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "index must already have an initial commit to open from reader"),
             "{error:?}"
         );
         IndexReader::close(reader.as_ref()).unwrap();
@@ -13671,8 +13578,7 @@ mod tests {
         config.set_index_commit(Some(Arc::clone(&reader_commit)));
         let error = IndexWriter::new(Arc::clone(&target), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "IndexCommit's reader must have the same directory passed to IndexWriter"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "IndexCommit's reader must have the same directory passed to IndexWriter"),
             "{error:?}"
         );
 
@@ -13683,8 +13589,7 @@ mod tests {
         })));
         let error = IndexWriter::new(Arc::clone(&target), config).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. }
-                if message == "IndexCommit's reader must have the same directory as the IndexCommit"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == "IndexCommit's reader must have the same directory as the IndexCommit"),
             "{error:?}"
         );
         IndexReader::close(reader.as_ref()).unwrap();
@@ -14227,7 +14132,7 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the aborted merge releases addIndexes");
         assert!(
-            matches!(&added, Err(LuceneError { kind: LuceneErrorKind::MergeAborted(message), .. }) if message == "merge was aborted."),
+            matches!(&added, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::MergeAborted(message) if message == "merge was aborted.")),
             "{added:?}"
         );
         assert!(stream
@@ -14335,7 +14240,7 @@ mod tests {
             .add_indexes_codec_readers(&codec_leaves(&source))
             .unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalState { message, .. }, .. } if message == "wrapping failed"),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message, .. } if message == "wrapping failed"),
             "{error:?}"
         );
         assert_eq!(writer.get_segment_count().unwrap(), 0);
@@ -14917,7 +14822,7 @@ mod tests {
             };
             let error = writer.add_batch(&batch).unwrap_err();
             assert!(
-                matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message, .. }, .. } if message == expected),
+                matches!(&error.kind, LuceneErrorKind::IllegalArgument { message, .. } if message == expected),
                 "{error:?}"
             );
             writer.rollback().unwrap();
@@ -14987,8 +14892,7 @@ mod tests {
         ReaderPool::drop(&writer.reader_pool, &segments[0]).unwrap();
         let error = writer.close_merge_readers(&merge, true, false).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Unchecked { class, .. }, .. }
-                if *class == "java.lang.NullPointerException"),
+            matches!(&error.kind, LuceneErrorKind::Unchecked { class, .. } if *class == "java.lang.NullPointerException"),
             "{error:?}"
         );
     }
@@ -15021,13 +14925,12 @@ mod tests {
         };
         let error = writer.add_batch(&batch).unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::AssertionError(message), .. } if message == "cursor boom"),
+            matches!(&error.kind, LuceneErrorKind::AssertionError(message) if message == "cursor boom"),
             "{error:?}"
         );
         assert!(!writer.is_open());
         assert!(
-            matches!(writer.get_tragic_exception().as_deref(),
-                Some(LuceneError { kind: LuceneErrorKind::AssertionError(message), .. }) if message == "cursor boom"),
+            matches!(writer.get_tragic_exception().as_deref(), Some(__lerr) if matches!(&__lerr.kind, LuceneErrorKind::AssertionError(message) if message == "cursor boom")),
             "{:?}",
             writer.get_tragic_exception()
         );
@@ -15042,13 +14945,7 @@ mod tests {
             .unwrap_or_else(|| panic!("{messages:?}"));
         assert!(tragic < logged, "{messages:?}");
         assert!(
-            matches!(
-                writer.add_document(&id_body_doc("b")),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                })
-            ),
+            matches!(writer.add_document(&id_body_doc("b")), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. })),
             "the writer closed on its tragedy"
         );
     }
@@ -15173,8 +15070,7 @@ mod tests {
             aborted
         };
         assert!(
-            matches!(&aborted, Err(LuceneError { kind: LuceneErrorKind::MergeAborted(message), .. })
-                if message == "merge is aborted: _1(10.5.0):c2/1"),
+            matches!(&aborted, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::MergeAborted(message) if message == "merge is aborted: _1(10.5.0):c2/1")),
             "{aborted:?}"
         );
         let logged: Vec<String> = stream

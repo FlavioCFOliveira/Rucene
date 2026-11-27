@@ -6,6 +6,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::codecs::lucene104::postings_reader::BlockPostingsEnum;
 use crate::error::Result;
 use crate::index::{
     DocAndFloatFeatureBuffer, FreqAndNormBuffer, Impacts, ImpactsEnum, ImpactsRef, ImpactsSource,
@@ -25,9 +26,35 @@ use crate::util::FixedBitSet;
 /// three then advance and query one object. Rust forbids that aliasing, so the
 /// enum lives in an `Rc<RefCell<..>>` that every user shares. Only one of them
 /// touches it at a time, so no borrow ever overlaps.
+///
+/// **Static fast path (rmp #679–#682).** Java's JIT inlines the postings calls
+/// of the phrase matchers, which are monomorphic in practice
+/// (`BlockPostingsEnum`). The port reaches the enum through a `dyn` call per
+/// `freq`, `nextPosition`, `advance`, `nextDoc` and `docID`, so a
+/// `BlockPostingsEnum` handed in is moved out of its box once, through the
+/// hidden [`PostingsEnum::into_any`] hook, and every call on it is then
+/// static and inlinable. Any other enum keeps the `dyn` path. The calls and
+/// their results are the same either way.
 #[derive(Clone)]
 pub struct SharedPostings {
-    inner: Rc<RefCell<Box<dyn ImpactsEnum>>>,
+    inner: Rc<RefCell<SharedEnum>>,
+}
+
+/// The enum a [`SharedPostings`] holds: the core's block postings enum by its
+/// concrete type, or any other enum.
+enum SharedEnum {
+    Block(Box<BlockPostingsEnum>),
+    Dyn(Box<dyn ImpactsEnum>),
+}
+
+/// Calls `$body` with `$e` bound to the enum, statically for the block enum.
+macro_rules! with_enum {
+    ($shared:expr, $e:ident => $body:expr) => {
+        match $shared {
+            SharedEnum::Block($e) => $body,
+            SharedEnum::Dyn($e) => $body,
+        }
+    };
 }
 
 impl std::fmt::Debug for SharedPostings {
@@ -39,8 +66,21 @@ impl std::fmt::Debug for SharedPostings {
 impl SharedPostings {
     /// Shares a postings list.
     pub fn new(postings: Box<dyn ImpactsEnum>) -> Self {
+        let is_block = postings
+            .disi_as_any()
+            .is_some_and(|any| any.is::<BlockPostingsEnum>());
+        let shared = if is_block {
+            SharedEnum::Block(
+                postings
+                    .into_any()
+                    .and_then(|any| any.downcast::<BlockPostingsEnum>().ok())
+                    .expect("INVARIANT: disi_as_any named a BlockPostingsEnum"),
+            )
+        } else {
+            SharedEnum::Dyn(postings)
+        };
         Self {
-            inner: Rc::new(RefCell::new(postings)),
+            inner: Rc::new(RefCell::new(shared)),
         }
     }
 
@@ -51,8 +91,9 @@ impl SharedPostings {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the frequency.
+    #[inline]
     pub fn freq(&self) -> Result<i32> {
-        self.inner.borrow().freq()
+        with_enum!(&*self.inner.borrow(), e => e.freq())
     }
 
     /// Returns the next position.
@@ -62,57 +103,61 @@ impl SharedPostings {
     /// # Errors
     ///
     /// Propagates any I/O error raised while reading the position.
+    #[inline]
     pub fn next_position(&self) -> Result<i32> {
-        self.inner.borrow_mut().next_position()
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.next_position())
     }
 
     /// Returns the start offset of the current position.
     ///
     /// Equivalent to `PostingsEnum.startOffset()`.
     pub fn start_offset(&self) -> i32 {
-        self.inner.borrow().start_offset()
+        with_enum!(&*self.inner.borrow(), e => e.start_offset())
     }
 
     /// Returns the end offset of the current position.
     ///
     /// Equivalent to `PostingsEnum.endOffset()`.
     pub fn end_offset(&self) -> i32 {
-        self.inner.borrow().end_offset()
+        with_enum!(&*self.inner.borrow(), e => e.end_offset())
     }
 
     /// Returns the cost of this postings list.
     ///
     /// Equivalent to `DocIdSetIterator.cost()`.
     pub fn cost(&self) -> i64 {
-        self.inner.borrow().cost()
+        with_enum!(&*self.inner.borrow(), e => e.cost())
     }
 }
 
 impl DocIdSetIterator for SharedPostings {
+    #[inline]
     fn doc_id(&self) -> i32 {
-        self.inner.borrow().doc_id()
+        with_enum!(&*self.inner.borrow(), e => e.doc_id())
     }
 
+    #[inline]
     fn next_doc(&mut self) -> Result<i32> {
-        self.inner.borrow_mut().next_doc()
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.next_doc())
     }
 
+    #[inline]
     fn advance(&mut self, target: i32) -> Result<i32> {
-        self.inner.borrow_mut().advance(target)
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.advance(target))
     }
 
     fn cost(&self) -> i64 {
-        self.inner.borrow().cost()
+        with_enum!(&*self.inner.borrow(), e => e.cost())
     }
 
     fn into_bit_set(&mut self, up_to: i32, bit_set: &mut FixedBitSet, offset: i32) -> Result<()> {
-        self.inner.borrow_mut().into_bit_set(up_to, bit_set, offset)
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.into_bit_set(up_to, bit_set, offset))
     }
 }
 
 impl ImpactsSource for SharedPostings {
     fn advance_shallow(&mut self, target: i32) -> Result<()> {
-        self.inner.borrow_mut().advance_shallow(target)
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.advance_shallow(target))
     }
 
     /// The shared enum's own view, lent with the `RefCell` borrow held for as
@@ -124,7 +169,11 @@ impl ImpactsSource for SharedPostings {
     fn get_impacts(&mut self) -> Result<ImpactsRef<'_>> {
         let mut built: Option<Result<CopiedImpacts>> = None;
         let lent = std::cell::RefMut::filter_map(self.inner.borrow_mut(), |inner| {
-            match inner.get_impacts() {
+            let impacts = match inner {
+                SharedEnum::Block(e) => e.get_impacts(),
+                SharedEnum::Dyn(e) => e.get_impacts(),
+            };
+            match impacts {
                 Ok(ImpactsRef::Borrowed(view)) => Some(view),
                 Ok(mut view) => {
                     built = Some(Ok(CopiedImpacts::copy_of(&mut *view)));
@@ -150,25 +199,27 @@ impl std::fmt::Display for SharedPostings {
     /// same `ImpactsEnum` object to three collaborators, so what would be
     /// rendered there is the enumeration itself. This forwards to it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&*self.inner.borrow(), f)
+        with_enum!(&*self.inner.borrow(), e => std::fmt::Display::fmt(&**e, f))
     }
 }
 
 impl PostingsEnum for SharedPostings {
+    #[inline]
     fn freq(&self) -> Result<i32> {
-        self.inner.borrow().freq()
+        SharedPostings::freq(self)
     }
 
+    #[inline]
     fn next_position(&mut self) -> Result<i32> {
-        self.inner.borrow_mut().next_position()
+        SharedPostings::next_position(self)
     }
 
     fn start_offset(&self) -> i32 {
-        self.inner.borrow().start_offset()
+        SharedPostings::start_offset(self)
     }
 
     fn end_offset(&self) -> i32 {
-        self.inner.borrow().end_offset()
+        SharedPostings::end_offset(self)
     }
 
     /// **Divergence from Lucene 10.5.0.** The payload of the current position
@@ -182,7 +233,7 @@ impl PostingsEnum for SharedPostings {
     }
 
     fn next_postings(&mut self, up_to: i32, buffer: &mut DocAndFloatFeatureBuffer) -> Result<()> {
-        self.inner.borrow_mut().next_postings(up_to, buffer)
+        with_enum!(&mut *self.inner.borrow_mut(), e => e.next_postings(up_to, buffer))
     }
 }
 

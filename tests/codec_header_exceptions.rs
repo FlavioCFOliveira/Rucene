@@ -104,12 +104,7 @@ fn report(
     input.close().unwrap();
     match outcome {
         Ok(_) => writeln!(out, "{label}: ok").unwrap(),
-        Err(
-            error @ LuceneError {
-                kind: LuceneErrorKind::IndexFormatTooOld { .. },
-                ..
-            },
-        ) => {
+        Err(error) if matches!(error.kind, LuceneErrorKind::IndexFormatTooOld { .. }) => {
             writeln!(out, "{label}: IndexFormatTooOldException: {error}").unwrap();
             writeln!(
                 out,
@@ -122,12 +117,7 @@ fn report(
             )
             .unwrap();
         }
-        Err(
-            error @ LuceneError {
-                kind: LuceneErrorKind::IndexFormatTooNew { .. },
-                ..
-            },
-        ) => {
+        Err(error) if matches!(error.kind, LuceneErrorKind::IndexFormatTooNew { .. }) => {
             writeln!(out, "{label}: IndexFormatTooNewException: {error}").unwrap();
             writeln!(
                 out,
@@ -139,11 +129,8 @@ fn report(
             )
             .unwrap();
         }
-        Err(LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message, .. },
-            ..
-        }) => {
-            writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
+        Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
+            writeln!(out, "{label}: CorruptIndexException: {}", escaped(message)).unwrap();
         }
         Err(other) => panic!("{label}: unexpected {other:?}"),
     }
@@ -162,11 +149,8 @@ fn report_checksum(
     input.close().unwrap();
     match outcome {
         Ok(_) => writeln!(out, "{label}: ok").unwrap(),
-        Err(LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { message, .. },
-            ..
-        }) => {
-            writeln!(out, "{label}: CorruptIndexException: {}", escaped(&message)).unwrap();
+        Err(ref __lerr) if let LuceneErrorKind::CorruptIndex { message, .. } = &__lerr.kind => {
+            writeln!(out, "{label}: CorruptIndexException: {}", escaped(message)).unwrap();
         }
         Err(other) => panic!("{label}: unexpected {other:?}"),
     }

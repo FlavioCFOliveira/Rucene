@@ -103,6 +103,14 @@ pub const MIN_TREEIFY_CAPACITY: usize = 64;
 /// where one `char` is two code units.
 pub fn java_string_hash_code(s: &str) -> i32 {
     let mut h: i32 = 0;
+    // PERF: an ASCII string's UTF-16 units are its bytes, so they are read
+    // directly, without decoding the UTF-8.
+    if s.is_ascii() {
+        for &byte in s.as_bytes() {
+            h = h.wrapping_mul(31).wrapping_add(i32::from(byte));
+        }
+        return h;
+    }
     for unit in s.encode_utf16() {
         h = h.wrapping_mul(31).wrapping_add(i32::from(unit));
     }
@@ -145,10 +153,39 @@ fn key_str<K: Borrow<str>>(key: &K) -> &str {
     key.borrow()
 }
 
-/// One `HashMap.Node`.
+/// Moves one bucket of an old table into `new_table`, appending each entry
+/// to the bucket `index` names, in the bucket's order.
+///
+/// PERF: Java's `resize` relinks the existing nodes of a bucket into its low
+/// and high lists and allocates nothing but the new table. A bucket whose entries all land in one bucket
+/// that is still empty — every bucket of one entry, and most others — moves
+/// whole here, its storage included, instead of being copied entry by entry
+/// into a freshly allocated chain. The resulting chains are the same either
+/// way: the moved bucket keeps its order, and the target was empty.
+fn rehash_bucket<E>(new_table: &mut [Vec<E>], bucket: Vec<E>, index: impl Fn(&E) -> usize) {
+    let Some(first) = bucket.first() else {
+        return;
+    };
+    let target = index(first);
+    if new_table[target].is_empty() && bucket.iter().all(|entry| index(entry) == target) {
+        new_table[target] = bucket;
+        return;
+    }
+    for entry in bucket {
+        let i = index(&entry);
+        new_table[i].push(entry);
+    }
+}
+
+/// The end of a bucket's chain, Java's `null` `next` link.
+const NIL: u32 = u32::MAX;
+
+/// One `HashMap.Node`: its cached hash, key, value and `next` link, an index
+/// into the map's node storage.
 #[derive(Clone, Debug)]
-struct Entry<K, V> {
+struct Node<K, V> {
     hash: i32,
+    next: u32,
     key: K,
     value: V,
 }
@@ -172,13 +209,19 @@ struct Entry<K, V> {
 ///
 /// The load factor is fixed at [`DEFAULT_LOAD_FACTOR`]; Lucene never constructs
 /// one of these maps with any other.
+///
+/// Storage follows `java.util.HashMap`: a table of bucket heads, each the
+/// start of a singly linked chain of nodes (`HashMap.Node.next`). The nodes
+/// live in one vector and link by index, so a map makes no allocation per
+/// bucket.
 #[derive(Clone)]
 pub struct JavaHashMap<V, K = String> {
-    /// `HashMap.table`. Empty stands for Java's `null` table, which is what a
-    /// freshly constructed map has until its first insertion.
-    table: Vec<Vec<Entry<K, V>>>,
-    /// `HashMap.size`.
-    size: usize,
+    /// `HashMap.table`: the head node of each bucket, [`NIL`] for an empty
+    /// one. Empty stands for Java's `null` table, which is what a freshly
+    /// constructed map has until its first insertion.
+    table: Vec<u32>,
+    /// The nodes, in no particular order; the chains order them.
+    nodes: Vec<Node<K, V>>,
     /// `HashMap.threshold`. Before the table exists this holds the *initial
     /// capacity* rather than a resize point, exactly as Java overloads it.
     threshold: i32,
@@ -192,7 +235,7 @@ impl<V, K> Default for JavaHashMap<V, K> {
     fn default() -> Self {
         JavaHashMap {
             table: Vec::new(),
-            size: 0,
+            nodes: Vec::new(),
             threshold: 0,
             treeified: false,
         }
@@ -214,6 +257,31 @@ impl<V> JavaHashMap<V> {
     }
 }
 
+/// The nodes of a [`JavaHashMap`] in iteration order: buckets by ascending
+/// index, each chain from head to tail.
+struct ChainIter<'a, K, V> {
+    table: &'a [u32],
+    nodes: &'a [Node<K, V>],
+    bucket: usize,
+    node: u32,
+}
+
+impl<'a, K, V> Iterator for ChainIter<'a, K, V> {
+    type Item = &'a Node<K, V>;
+
+    #[inline]
+    fn next(&mut self) -> Option<&'a Node<K, V>> {
+        while self.node == NIL {
+            let head = *self.table.get(self.bucket)?;
+            self.bucket += 1;
+            self.node = head;
+        }
+        let node = &self.nodes[self.node as usize];
+        self.node = node.next;
+        Some(node)
+    }
+}
+
 impl<V, K> JavaHashMap<V, K> {
     /// [`with_initial_capacity`](JavaHashMap::with_initial_capacity), for any
     /// way of holding the key.
@@ -228,7 +296,7 @@ impl<V, K> JavaHashMap<V, K> {
         }
         JavaHashMap {
             table: Vec::new(),
-            size: 0,
+            nodes: Vec::new(),
             threshold: table_size_for(initial_capacity),
             treeified: false,
         }
@@ -236,12 +304,12 @@ impl<V, K> JavaHashMap<V, K> {
 
     /// `HashMap.size()`.
     pub fn len(&self) -> usize {
-        self.size
+        self.nodes.len()
     }
 
     /// `HashMap.isEmpty()`.
     pub fn is_empty(&self) -> bool {
-        self.size == 0
+        self.nodes.is_empty()
     }
 
     /// The current table length, or 0 while the table is still unallocated.
@@ -259,199 +327,54 @@ impl<V, K> JavaHashMap<V, K> {
     pub fn is_treeified(&self) -> bool {
         self.treeified
     }
-}
 
-impl<V, K: Borrow<str>> JavaHashMap<V, K> {
-    /// `HashMap.get(Object)`.
-    pub fn get(&self, key: &str) -> Option<&V> {
-        if self.table.is_empty() {
-            return None;
+    /// The nodes in iteration order.
+    fn chain_iter(&self) -> ChainIter<'_, K, V> {
+        ChainIter {
+            table: &self.table,
+            nodes: &self.nodes,
+            bucket: 0,
+            node: NIL,
         }
-        let hash = spread(key);
-        let bucket = &self.table[index_for(hash, self.table.len())];
-        bucket
-            .iter()
-            .find(|e| e.hash == hash && key_str(&e.key) == key)
-            .map(|e| &e.value)
     }
 
-    /// Where `key`'s node sits, its bucket and its place in that bucket, for
-    /// [`value_at`](Self::value_at): `HashMap.get(Object)` split in two, so
-    /// that the holder of a shared map that is never mutated can keep the
-    /// answer without keeping a borrow of the map.
-    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
-        if self.table.is_empty() {
-            return None;
-        }
-        let hash = spread(key);
-        let bucket = index_for(hash, self.table.len());
-        self.table[bucket]
-            .iter()
-            .position(|e| e.hash == hash && key_str(&e.key) == key)
-            .map(|index| (bucket, index))
-    }
-
-    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
-    /// unmodified map.
-    pub(crate) fn value_at(&self, (bucket, index): (usize, usize)) -> &V {
-        &self.table[bucket][index].value
-    }
-
-    /// `HashMap.containsKey(Object)`.
-    pub fn contains_key(&self, key: &str) -> bool {
-        self.get(key).is_some()
-    }
-
-    /// `HashMap.put(K, V)`, returning the previous value as Java does.
-    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        if self.table.is_empty() {
-            self.resize();
-        }
-        let hash = spread(key_str(&key));
-        let n = self.table.len();
-        let index = index_for(hash, n);
-        let bucket = &mut self.table[index];
-        for entry in bucket.iter_mut() {
-            if entry.hash == hash && key_str(&entry.key) == key_str(&key) {
-                return Some(std::mem::replace(&mut entry.value, value));
+    /// Puts the nodes in iteration order in their storage, relinking the
+    /// chains, so that the storage can be walked (or consumed) in that order.
+    fn order_storage_by_iteration(&mut self) {
+        let mut order: Vec<u32> = Vec::with_capacity(self.nodes.len());
+        for &head in &self.table {
+            let mut node = head;
+            while node != NIL {
+                order.push(node);
+                node = self.nodes[node as usize].next;
             }
         }
-        bucket.push(Entry { hash, key, value });
-        // `putVal` counts the links it walked before appending, so a bucket that
-        // already held `TREEIFY_THRESHOLD` nodes triggers `treeifyBin` — which
-        // resizes instead of building a tree while the table is short.
-        if bucket.len() > TREEIFY_THRESHOLD {
-            if n < MIN_TREEIFY_CAPACITY {
-                self.resize();
-            } else {
-                self.treeified = true;
+        if order.iter().enumerate().all(|(i, &node)| i as u32 == node) {
+            return;
+        }
+        // `rank[old]` is the node's place in iteration order.
+        let mut rank = vec![0u32; self.nodes.len()];
+        for (i, &node) in order.iter().enumerate() {
+            rank[node as usize] = i as u32;
+        }
+        for head in &mut self.table {
+            if *head != NIL {
+                *head = rank[*head as usize];
             }
         }
-        self.size += 1;
-        if self.size as i32 > self.threshold {
-            self.resize();
-        }
-        None
-    }
-
-    /// `HashMap.get(Object)`, returning the value for in-place change.
-    pub fn get_mut(&mut self, key: &str) -> Option<&mut V> {
-        if self.table.is_empty() {
-            return None;
-        }
-        let hash = spread(key);
-        let n = self.table.len();
-        self.table[index_for(hash, n)]
-            .iter_mut()
-            .find(|e| e.hash == hash && key_str(&e.key) == key)
-            .map(|e| &mut e.value)
-    }
-
-    /// `HashMap.computeIfAbsent(K, Function)` with a mapping function that
-    /// never returns `null`: returns the value mapped to `key`, inserting
-    /// `make()` first when there is none.
-    ///
-    /// Its insertion is not `put`'s, and the difference is visible in the
-    /// iteration order, so it is ported separately from JDK 21's
-    /// `HashMap.computeIfAbsent`:
-    ///
-    /// * the table is resized *before* the lookup when `size > threshold` (or
-    ///   when it is still unallocated), never after the insertion — so the
-    ///   entry that crosses the threshold does not trigger the resize itself;
-    /// * the new node becomes the head of its bucket
-    ///   (`tab[i] = newNode(hash, key, v, first)`), not its tail;
-    /// * `treeifyBin` runs when the bucket already held
-    ///   `TREEIFY_THRESHOLD - 1` nodes, one node earlier than in `putVal`.
-    pub fn compute_if_absent(&mut self, key: &str, make: impl FnOnce() -> V) -> &mut V
-    where
-        K: for<'a> From<&'a str>,
-    {
-        if self.size as i32 > self.threshold || self.table.is_empty() {
-            self.resize();
-        }
-        let hash = spread(key);
-        let n = self.table.len();
-        let index = index_for(hash, n);
-        if let Some(position) = self.table[index]
-            .iter()
-            .position(|e| e.hash == hash && key_str(&e.key) == key)
-        {
-            return &mut self.table[index][position].value;
-        }
-        let bin_count = self.table[index].len();
-        self.table[index].insert(
-            0,
-            Entry {
-                hash,
-                key: K::from(key),
-                value: make(),
-            },
-        );
-        if bin_count >= TREEIFY_THRESHOLD - 1 {
-            if n < MIN_TREEIFY_CAPACITY {
-                self.resize();
-            } else {
-                self.treeified = true;
+        for node in &mut self.nodes {
+            if node.next != NIL {
+                node.next = rank[node.next as usize];
             }
         }
-        self.size += 1;
-        let index = index_for(hash, self.table.len());
-        let position = self.table[index]
-            .iter()
-            .position(|e| e.hash == hash && key_str(&e.key) == key)
-            .expect("INVARIANT: the entry was just inserted");
-        &mut self.table[index][position].value
-    }
-
-    /// `HashMap.remove(Object)`.
-    pub fn remove(&mut self, key: &str) -> Option<V> {
-        if self.table.is_empty() {
-            return None;
+        // Apply the permutation in place, cycle by cycle.
+        for start in 0..rank.len() {
+            while rank[start] as usize != start {
+                let target = rank[start] as usize;
+                self.nodes.swap(start, target);
+                rank.swap(start, target);
+            }
         }
-        let hash = spread(key);
-        let n = self.table.len();
-        let bucket = &mut self.table[index_for(hash, n)];
-        let position = bucket
-            .iter()
-            .position(|e| e.hash == hash && key_str(&e.key) == key)?;
-        let removed = bucket.remove(position);
-        self.size -= 1;
-        Some(removed.value)
-    }
-
-    /// `HashMap.clear()`, which keeps the table it has and empties its buckets.
-    pub fn clear(&mut self) {
-        for bucket in self.table.iter_mut() {
-            bucket.clear();
-        }
-        self.size = 0;
-        self.treeified = false;
-    }
-
-    /// Iterates the entries in `HashMap.entrySet()` order: buckets by ascending
-    /// index, and within a bucket the chain from head to tail.
-    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
-        self.table
-            .iter()
-            .flat_map(|bucket| bucket.iter().map(|e| (&e.key, &e.value)))
-    }
-
-    /// Iterates the keys in `HashMap.keySet()` order.
-    pub fn keys(&self) -> impl Iterator<Item = &K> {
-        self.iter().map(|(k, _)| k)
-    }
-
-    /// Iterates the values in `HashMap.values()` order.
-    pub fn values(&self) -> impl Iterator<Item = &V> {
-        self.iter().map(|(_, v)| v)
-    }
-
-    /// Iterates the entries in `HashMap.entrySet()` order, with each value
-    /// open to in-place change (`Map.Entry.setValue`).
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
-        self.table
-            .iter_mut()
-            .flat_map(|bucket| bucket.iter_mut().map(|e| (&e.key, &mut e.value)))
     }
 
     /// `HashMap.resize()`.
@@ -462,11 +385,10 @@ impl<V, K: Borrow<str>> JavaHashMap<V, K> {
     ///
     /// Rehashing preserves each bucket's chain order. Java splits a bucket into
     /// a low and a high list and keeps the relative order of both; since every
-    /// entry of old bucket `j` lands in new bucket `j` or `j + oldCap`, and no
+    /// node of old bucket `j` lands in new bucket `j` or `j + oldCap`, and no
     /// two old buckets can feed one new bucket, walking the old table in order
-    /// and appending reproduces exactly those chains. The order in which the
-    /// *old* buckets are visited is for the same reason unobservable — a
-    /// negative control that reverses it does not change any iteration order.
+    /// and appending each node to its new bucket's tail reproduces exactly
+    /// those chains.
     fn resize(&mut self) {
         let old_cap = self.table.len();
         let old_thr = self.threshold;
@@ -499,16 +421,252 @@ impl<V, K: Borrow<str>> JavaHashMap<V, K> {
         }
         self.threshold = new_thr;
 
-        let old_table = std::mem::take(&mut self.table);
-        let mut new_table: Vec<Vec<Entry<K, V>>> = Vec::with_capacity(new_cap);
-        new_table.resize_with(new_cap, Vec::new);
-        for bucket in old_table {
-            for entry in bucket {
-                let index = index_for(entry.hash, new_cap);
-                new_table[index].push(entry);
+        let old_table = std::mem::replace(&mut self.table, vec![NIL; new_cap]);
+        let mut tails = vec![NIL; new_cap];
+        for head in old_table {
+            let mut node = head;
+            while node != NIL {
+                let next = self.nodes[node as usize].next;
+                self.nodes[node as usize].next = NIL;
+                let bucket = index_for(self.nodes[node as usize].hash, new_cap);
+                match tails[bucket] {
+                    NIL => self.table[bucket] = node,
+                    tail => self.nodes[tail as usize].next = node,
+                }
+                tails[bucket] = node;
+                node = next;
             }
         }
-        self.table = new_table;
+    }
+
+    /// Removes the node at `index` from the storage once it is unlinked,
+    /// moving the last node into its place and relinking the link that
+    /// pointed at the moved node.
+    fn swap_remove_node(&mut self, index: usize) -> Node<K, V> {
+        let last = self.nodes.len() - 1;
+        if index != last {
+            let bucket = index_for(self.nodes[last].hash, self.table.len());
+            if self.table[bucket] == last as u32 {
+                self.table[bucket] = index as u32;
+            } else {
+                let mut node = self.table[bucket];
+                while self.nodes[node as usize].next != last as u32 {
+                    node = self.nodes[node as usize].next;
+                }
+                self.nodes[node as usize].next = index as u32;
+            }
+        }
+        self.nodes.swap_remove(index)
+    }
+}
+
+impl<V, K: Borrow<str>> JavaHashMap<V, K> {
+    /// The node holding `key` (whose `hash(key)` is `hash`), with the node
+    /// before it in its chain, or `None`.
+    #[inline]
+    fn find(&self, hash: i32, key: &str) -> Option<(u32, u32)> {
+        if self.table.is_empty() {
+            return None;
+        }
+        let mut prev = NIL;
+        let mut node = self.table[index_for(hash, self.table.len())];
+        while node != NIL {
+            let n = &self.nodes[node as usize];
+            if n.hash == hash && key_str(&n.key) == key {
+                return Some((prev, node));
+            }
+            prev = node;
+            node = n.next;
+        }
+        None
+    }
+
+    /// `HashMap.get(Object)`.
+    pub fn get(&self, key: &str) -> Option<&V> {
+        self.find(spread(key), key)
+            .map(|(_, node)| &self.nodes[node as usize].value)
+    }
+
+    /// Where `key`'s node sits, for [`value_at`](Self::value_at):
+    /// `HashMap.get(Object)` split in two, so that the holder of a shared map
+    /// that is never mutated can keep the answer without keeping a borrow of
+    /// the map.
+    pub(crate) fn slot_of(&self, key: &str) -> Option<(usize, usize)> {
+        self.find(spread(key), key)
+            .map(|(_, node)| (node as usize, 0))
+    }
+
+    /// The value at a slot [`slot_of`](Self::slot_of) answered on this same,
+    /// unmodified map.
+    pub(crate) fn value_at(&self, (node, _): (usize, usize)) -> &V {
+        &self.nodes[node].value
+    }
+
+    /// `HashMap.containsKey(Object)`.
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.get(key).is_some()
+    }
+
+    /// `HashMap.put(K, V)`, returning the previous value as Java does.
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
+        let hash = spread(key_str(&key));
+        self.insert_with_hash(hash, key, value)
+    }
+
+    /// [`insert`](Self::insert) for a key whose `hash(key)` is already known:
+    /// the hash this or another map stored for the same characters. Java's
+    /// `String` caches its `hashCode()`, so `put` of a key already in a map
+    /// recomputes nothing; this is that path.
+    pub(crate) fn insert_with_hash(&mut self, hash: i32, key: K, value: V) -> Option<V> {
+        debug_assert_eq!(hash, spread(key_str(&key)));
+        if self.table.is_empty() {
+            self.resize();
+        }
+        let n = self.table.len();
+        let bucket = index_for(hash, n);
+        // `putVal` walks the chain, counting its links, and appends at the
+        // tail.
+        let mut tail = NIL;
+        let mut node = self.table[bucket];
+        let mut bin_count = 0;
+        while node != NIL {
+            let existing = &mut self.nodes[node as usize];
+            if existing.hash == hash && key_str(&existing.key) == key_str(&key) {
+                return Some(std::mem::replace(&mut existing.value, value));
+            }
+            tail = node;
+            node = existing.next;
+            bin_count += 1;
+        }
+        let new = self.nodes.len() as u32;
+        self.nodes.push(Node {
+            hash,
+            next: NIL,
+            key,
+            value,
+        });
+        match tail {
+            NIL => self.table[bucket] = new,
+            tail => self.nodes[tail as usize].next = new,
+        }
+        // `putVal` counts the links it walked before appending, so a bucket that
+        // already held `TREEIFY_THRESHOLD` nodes triggers `treeifyBin` — which
+        // resizes instead of building a tree while the table is short.
+        if bin_count + 1 > TREEIFY_THRESHOLD {
+            if n < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                self.treeified = true;
+            }
+        }
+        if self.nodes.len() as i32 > self.threshold {
+            self.resize();
+        }
+        None
+    }
+
+    /// `HashMap.get(Object)`, returning the value for in-place change.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut V> {
+        let (_, node) = self.find(spread(key), key)?;
+        Some(&mut self.nodes[node as usize].value)
+    }
+
+    /// `HashMap.computeIfAbsent(K, Function)` with a mapping function that
+    /// never returns `null`: returns the value mapped to `key`, inserting
+    /// `make()` first when there is none.
+    ///
+    /// Its insertion is not `put`'s, and the difference is visible in the
+    /// iteration order, so it is ported separately from JDK 21's
+    /// `HashMap.computeIfAbsent`:
+    ///
+    /// * the table is resized *before* the lookup when `size > threshold` (or
+    ///   when it is still unallocated), never after the insertion — so the
+    ///   entry that crosses the threshold does not trigger the resize itself;
+    /// * the new node becomes the head of its bucket
+    ///   (`tab[i] = newNode(hash, key, v, first)`), not its tail;
+    /// * `treeifyBin` runs when the bucket already held
+    ///   `TREEIFY_THRESHOLD - 1` nodes, one node earlier than in `putVal`.
+    pub fn compute_if_absent(&mut self, key: &str, make: impl FnOnce() -> V) -> &mut V
+    where
+        K: for<'a> From<&'a str>,
+    {
+        if self.nodes.len() as i32 > self.threshold || self.table.is_empty() {
+            self.resize();
+        }
+        let hash = spread(key);
+        let n = self.table.len();
+        let bucket = index_for(hash, n);
+        let mut node = self.table[bucket];
+        let mut bin_count = 0;
+        while node != NIL {
+            let existing = &self.nodes[node as usize];
+            if existing.hash == hash && key_str(&existing.key) == key {
+                return &mut self.nodes[node as usize].value;
+            }
+            node = existing.next;
+            bin_count += 1;
+        }
+        let new = self.nodes.len() as u32;
+        self.nodes.push(Node {
+            hash,
+            next: self.table[bucket],
+            key: K::from(key),
+            value: make(),
+        });
+        self.table[bucket] = new;
+        if bin_count >= TREEIFY_THRESHOLD - 1 {
+            if n < MIN_TREEIFY_CAPACITY {
+                self.resize();
+            } else {
+                self.treeified = true;
+            }
+        }
+        // A resize relinks the nodes but never moves them.
+        &mut self.nodes[new as usize].value
+    }
+
+    /// `HashMap.remove(Object)`.
+    pub fn remove(&mut self, key: &str) -> Option<V> {
+        let (prev, node) = self.find(spread(key), key)?;
+        let next = self.nodes[node as usize].next;
+        match prev {
+            NIL => {
+                let bucket = index_for(self.nodes[node as usize].hash, self.table.len());
+                self.table[bucket] = next;
+            }
+            prev => self.nodes[prev as usize].next = next,
+        }
+        Some(self.swap_remove_node(node as usize).value)
+    }
+
+    /// `HashMap.clear()`, which keeps the table it has and empties its buckets.
+    pub fn clear(&mut self) {
+        self.table.fill(NIL);
+        self.nodes.clear();
+        self.treeified = false;
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order: buckets by ascending
+    /// index, and within a bucket the chain from head to tail.
+    pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
+        self.chain_iter().map(|n| (&n.key, &n.value))
+    }
+
+    /// Iterates the keys in `HashMap.keySet()` order.
+    pub fn keys(&self) -> impl Iterator<Item = &K> {
+        self.iter().map(|(k, _)| k)
+    }
+
+    /// Iterates the values in `HashMap.values()` order.
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, v)| v)
+    }
+
+    /// Iterates the entries in `HashMap.entrySet()` order, with each value
+    /// open to in-place change (`Map.Entry.setValue`).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.order_storage_by_iteration();
+        self.nodes.iter_mut().map(|n| (&n.key, &mut n.value))
     }
 
     /// `HashMap.putMapEntries(Map, boolean)`, the body shared by the copy
@@ -569,21 +727,17 @@ impl<V, K: Borrow<str>> JavaHashMap<V, K> {
         V: Clone,
     {
         JavaHashMap {
-            table: self
-                .table
+            table: self.table.clone(),
+            nodes: self
+                .nodes
                 .iter()
-                .map(|bucket| {
-                    bucket
-                        .iter()
-                        .map(|e| Entry {
-                            hash: e.hash,
-                            key: key(&e.key),
-                            value: e.value.clone(),
-                        })
-                        .collect()
+                .map(|n| Node {
+                    hash: n.hash,
+                    next: n.next,
+                    key: key(&n.key),
+                    value: n.value.clone(),
                 })
                 .collect(),
-            size: self.size,
             threshold: self.threshold,
             treeified: self.treeified,
         }
@@ -649,7 +803,7 @@ impl<V> Extend<(String, V)> for JavaHashMap<V> {
 /// `AbstractMap.equals`, which compares contents and ignores iteration order.
 impl<V: PartialEq, K: Borrow<str>> PartialEq for JavaHashMap<V, K> {
     fn eq(&self, other: &Self) -> bool {
-        self.size == other.size
+        self.len() == other.len()
             && self
                 .iter()
                 .all(|(k, v)| other.get(key_str(k)).is_some_and(|other_v| other_v == v))
@@ -668,17 +822,27 @@ impl<V: fmt::Debug, K: fmt::Debug + Borrow<str>> fmt::Debug for JavaHashMap<V, K
 impl<V, K> JavaHashMap<V, K> {
     /// Consumes the map and yields its entries in iteration order, without
     /// collecting them first.
-    pub(crate) fn into_entries(self) -> impl Iterator<Item = (K, V)> {
-        self.table
-            .into_iter()
-            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
+    pub(crate) fn into_entries(mut self) -> impl Iterator<Item = (K, V)> {
+        self.order_storage_by_iteration();
+        self.nodes.into_iter().map(|n| (n.key, n.value))
     }
 
     /// Consumes the map and yields its keys in iteration order.
-    pub fn into_keys(self) -> impl Iterator<Item = K> {
-        self.table
-            .into_iter()
-            .flat_map(|bucket| bucket.into_iter().map(|e| e.key))
+    pub fn into_keys(mut self) -> impl Iterator<Item = K> {
+        self.order_storage_by_iteration();
+        self.nodes.into_iter().map(|n| n.key)
+    }
+
+    /// The keys in `keySet()` order, each with its stored `hash(key)`.
+    pub(crate) fn hashed_keys(&self) -> impl Iterator<Item = (i32, &K)> {
+        self.chain_iter().map(|n| (n.hash, &n.key))
+    }
+
+    /// Consumes the map, yielding its keys in `keySet()` order, each with
+    /// its stored `hash(key)`.
+    pub(crate) fn into_hashed_keys(mut self) -> impl Iterator<Item = (i32, K)> {
+        self.order_storage_by_iteration();
+        self.nodes.into_iter().map(|n| (n.hash, n.key))
     }
 }
 
@@ -688,11 +852,7 @@ impl<V> IntoIterator for JavaHashMap<V> {
 
     /// Consumes the map and yields its entries in `HashMap.entrySet()` order.
     fn into_iter(self) -> Self::IntoIter {
-        let entries: Vec<(String, V)> = self
-            .table
-            .into_iter()
-            .flat_map(|bucket| bucket.into_iter().map(|e| (e.key, e.value)))
-            .collect();
+        let entries: Vec<(String, V)> = self.into_entries().collect();
         entries.into_iter()
     }
 }
@@ -881,9 +1041,9 @@ impl<V> JavaIntHashMap<V> {
         let mut new_table: Vec<Vec<(i32, V)>> = Vec::with_capacity(new_cap);
         new_table.resize_with(new_cap, Vec::new);
         for bucket in old_table {
-            for (key, value) in bucket {
-                new_table[index_for(spread_int(key), new_cap)].push((key, value));
-            }
+            rehash_bucket(&mut new_table, bucket, |&(key, _)| {
+                index_for(spread_int(key), new_cap)
+            });
         }
         self.table = new_table;
     }
@@ -2045,10 +2205,21 @@ impl<K: Borrow<str>> JavaHashSet<K> {
         K: Clone,
     {
         let mut set = Self::sized_for_collection(source.len());
-        for value in source.iter() {
-            set.insert(value.clone());
+        // PERF: each element's stored hash is reused, as Java's `add` reads
+        // the `String`'s cached `hashCode()`.
+        for (hash, value) in source.map.hashed_keys() {
+            set.map.insert_with_hash(hash, value.clone(), ());
         }
         set
+    }
+
+    /// `addAll(other)` for a set that is consumed: each element added in
+    /// `other`'s iteration order, with its stored hash reused (Java's
+    /// `String` caches its `hashCode()`).
+    pub(crate) fn extend_from_set(&mut self, other: JavaHashSet<K>) {
+        for (hash, value) in other.map.into_hashed_keys() {
+            self.map.insert_with_hash(hash, value, ());
+        }
     }
 
     /// The empty set `new HashSet<>(Collection)` starts from for a

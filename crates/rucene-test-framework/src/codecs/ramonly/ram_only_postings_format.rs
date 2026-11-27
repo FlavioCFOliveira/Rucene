@@ -916,10 +916,7 @@ impl RAMDocsEnum {
 /// The message of an unchecked Java error.
 fn java_message(e: &LuceneError) -> Option<String> {
     match e {
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { message, .. },
-            ..
-        } => message.clone(),
+        __lerr if let LuceneErrorKind::Unchecked { message, .. } = &__lerr.kind => message.clone(),
         _ => None,
     }
 }

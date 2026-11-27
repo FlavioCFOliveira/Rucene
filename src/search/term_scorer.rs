@@ -14,7 +14,7 @@ use crate::search::max_score_cache::MaxScoreCache;
 use crate::search::scorable::Scorable;
 use crate::search::scorer::Scorer;
 use crate::search::sim_scorer_source::{SharedSimScorer, SharedSimScorerRef};
-use crate::search::similarities::SimScorer;
+use crate::search::similarities::BulkSimScorer;
 use crate::util::Bits;
 
 /// A [`Box<dyn ImpactsEnum>`] seen as an [`ImpactsEnum`].
@@ -188,7 +188,9 @@ pub struct TermScorer {
     scorer: SharedSimScorer,
     norms: Option<Box<dyn NumericDocValues>>,
     norm_values: Vec<i64>,
-    score_spare: Vec<f32>,
+    /// `TermScorer.bulkScorer`, built once from the scorer
+    /// (`TermScorer.java:40, 54, 77`); `None` for the default bulk scorer.
+    bulk_scorer: Option<Box<dyn BulkSimScorer + Send + Sync>>,
 }
 
 impl std::fmt::Debug for TermScorer {
@@ -212,10 +214,10 @@ impl TermScorer {
         let max_score_cache = MaxScoreCache::new(Box::new(SharedSimScorerRef::new(scorer.clone())));
         Self {
             iteration: Iteration::Slow(SlowImpactsEnum::new(postings_enum), max_score_cache),
+            bulk_scorer: scorer.owned_bulk_sim_scorer(),
             scorer,
             norms,
             norm_values: Vec::new(),
-            score_spare: Vec::new(),
         }
     }
 
@@ -241,10 +243,10 @@ impl TermScorer {
         };
         Self {
             iteration,
+            bulk_scorer: scorer.owned_bulk_sim_scorer(),
             scorer,
             norms,
             norm_values: Vec::new(),
-            score_spare: Vec::new(),
         }
     }
 
@@ -365,25 +367,23 @@ impl Scorer for TermScorer {
             norms.long_values(size as i32, &buffer.docs, 0, &mut self.norm_values, 0, 1)?;
         }
 
-        if self.score_spare.len() < size {
-            self.score_spare.resize(size, 0.0);
+        // `bulkScorer.score(buffer.size, buffer.features, normValues,
+        // buffer.features)` (`TermScorer.java:166`), with Java's `features` as
+        // both the frequencies and the destination.
+        //
+        // `bulkScorer` was built once, in the constructor; a scorer without a
+        // specialised bulk form gets the default one, `score(freq, norm)` per
+        // document, run here in place.
+        match self.bulk_scorer.as_mut() {
+            Some(bulk) => bulk.score_in_place(size, &mut buffer.features, &self.norm_values),
+            None => {
+                let scorer = &*self.scorer;
+                let norms = &self.norm_values[..size];
+                for (feature, &norm) in buffer.features[..size].iter_mut().zip(norms) {
+                    *feature = scorer.score(*feature, norm);
+                }
+            }
         }
-        // Java passes `buffer.features` as both the frequencies and the
-        // destination; this port's `BulkSimScorer` takes distinct slices, so the
-        // scores are computed into a spare buffer and copied back. The values
-        // are identical: Java reads every frequency before writing the score at
-        // the same index.
-        let scorer = SharedSimScorerRef::new(self.scorer.clone());
-        {
-            let mut bulk = scorer.as_bulk_sim_scorer();
-            bulk.score(
-                size,
-                &buffer.features,
-                &self.norm_values,
-                &mut self.score_spare,
-            );
-        }
-        buffer.features[..size].copy_from_slice(&self.score_spare[..size]);
         Ok(())
     }
 }
@@ -391,6 +391,7 @@ impl Scorer for TermScorer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::similarities::SimScorer;
     use crate::search::NO_MORE_DOCS;
     use crate::util::FixedBitSet;
     use std::sync::atomic::{AtomicUsize, Ordering};

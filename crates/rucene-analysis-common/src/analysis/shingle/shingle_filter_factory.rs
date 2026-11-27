@@ -28,8 +28,8 @@ use rucene::analysis::TokenStream;
 use rucene::error::{LuceneError, Result};
 
 use super::shingle_filter::{
-    new_shingle_filter, DEFAULT_FILLER_TOKEN, DEFAULT_MAX_SHINGLE_SIZE, DEFAULT_MIN_SHINGLE_SIZE,
-    DEFAULT_TOKEN_SEPARATOR,
+    new_shingle_filter, OwnedShingleFilter, DEFAULT_FILLER_TOKEN, DEFAULT_MAX_SHINGLE_SIZE,
+    DEFAULT_MIN_SHINGLE_SIZE, DEFAULT_TOKEN_SEPARATOR,
 };
 use crate::spi::check_unknown_parameters;
 
@@ -162,5 +162,19 @@ impl TokenFilterFactory for ShingleFilterFactory {
         logic.set_token_separator(Some(&self.token_separator));
         logic.set_filler_token(Some(&self.filler_token));
         Ok(Box::new(r))
+    }
+
+    /// `create(input)` as an owned stage, with the same settings
+    /// (`ShingleFilterFactory.java:85-94`).
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        Some(
+            OwnedShingleFilter::new(self.min_shingle_size, self.max_shingle_size).map(|mut r| {
+                r.set_output_unigrams(self.output_unigrams);
+                r.set_output_unigrams_if_no_shingles(self.output_unigrams_if_no_shingles);
+                r.set_token_separator(Some(&self.token_separator));
+                r.set_filler_token(Some(&self.filler_token));
+                Box::new(r) as Box<dyn rucene::analysis::owned::OwnedTokenFilter>
+            }),
+        )
     }
 }

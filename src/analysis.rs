@@ -17,6 +17,8 @@ pub mod filtering_token_filter;
 pub mod graph_token_filter;
 pub mod java_regex;
 pub mod lower_case_filter;
+#[doc(hidden)]
+pub mod owned;
 pub mod reusable_string_reader;
 pub mod standard;
 pub mod stop_filter;
@@ -830,6 +832,19 @@ impl<I: AttributeInterface + ?Sized> AttributeHandle<I> {
         Arc::ptr_eq(&self.cell, &other.cell)
     }
 
+    /// Borrows the implementation, for a crate-internal caller that reads
+    /// several interfaces of one implementation (see
+    /// [`same_impl_as`](Self::same_impl_as)) under one borrow, casting with
+    /// [`AttributeInterface::cast`].
+    ///
+    /// # Panics
+    ///
+    /// When the instance is borrowed mutably.
+    #[inline]
+    pub(crate) fn borrow_impl(&self) -> AtomicRef<'_, Box<dyn AttributeImpl>> {
+        self.cell.borrow()
+    }
+
     /// Borrows the implementation mutably, for a caller that sets several
     /// interfaces of one implementation (see [`same_impl_as`](Self::same_impl_as))
     /// under one borrow, casting with [`AttributeInterface::cast_mut`].
@@ -1039,6 +1054,19 @@ impl SharedTokenStream {
             return reuse.take().expect("INVARIANT: matched above");
         }
         Box::new(SharedTokenStream::new(stream))
+    }
+}
+
+impl SharedTokenStream {
+    /// Borrows the wrapped stream mutably, for a crate-internal consumer that
+    /// calls it many times in a row (the indexing chain's token loop): what
+    /// [`increment_token`](TokenStream::increment_token) borrows per call.
+    ///
+    /// # Panics
+    ///
+    /// When the wrapped stream is borrowed.
+    pub(crate) fn borrow_inner_mut(&self) -> AtomicRefMut<'_, dyn TokenStream + 'static> {
+        self.inner.borrow_mut()
     }
 }
 
@@ -1292,6 +1320,10 @@ pub struct TokenStreamComponents {
     /// through, shared with the source as Java shares the object, so the
     /// next call reuses it (`Analyzer.java:184-198`).
     reusable_string_reader: Option<Arc<AtomicRefCell<ReusableStringReader>>>,
+    /// The stream `tokenStream(String, String)` returns when the analyzer
+    /// describes owned stages for these components
+    /// ([`owned::OwnedTokenStream`]); set when the components are created.
+    owned: Option<Arc<AtomicRefCell<owned::OwnedTokenStream>>>,
 }
 
 /// A [`CharReader`] handle to the [`ReusableStringReader`] of a
@@ -1333,6 +1365,7 @@ impl TokenStreamComponents {
             source,
             sink,
             reusable_string_reader: None,
+            owned: None,
         }
     }
 
@@ -1367,6 +1400,7 @@ impl TokenStreamComponents {
             source: self.source,
             sink,
             reusable_string_reader: self.reusable_string_reader,
+            owned: None,
         }
     }
 }
@@ -1450,6 +1484,19 @@ pub trait ReuseStrategy: Debug + Send + Sync {
         field_name: Option<&str>,
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     );
+
+    /// Whether one components instance serves every field (`Some(true)`, the
+    /// global strategy), one per field name (`Some(false)`, the per-field
+    /// strategy), or neither is known (`None`, the default). An owned chain
+    /// ([`owned`]) is shared by the same fields as the components it
+    /// reproduces, so that a consumer reading its attribute source sees what
+    /// it sees with the shared stream.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679 owned chain).
+    #[doc(hidden)]
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        None
+    }
 }
 
 /// Reuses the same components for every field.
@@ -1479,6 +1526,10 @@ impl ReuseStrategy for GlobalReuseStrategy {
         components: Arc<AtomicRefCell<TokenStreamComponents>>,
     ) {
         state.stored_value().set(Some(Box::new(components)));
+    }
+
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        Some(true)
     }
 }
 
@@ -1526,11 +1577,94 @@ impl ReuseStrategy for PerFieldReuseStrategy {
             }
         }
     }
+
+    fn shares_components_across_fields(&self) -> Option<bool> {
+        Some(false)
+    }
 }
 
 // -----------------------------------------------------------------------------
 // Analyzer
 // -----------------------------------------------------------------------------
+
+/// `Analyzer.tokenStream(String, String)` (`Analyzer.java:172-190`); with
+/// `use_owned`, the components' owned stream stands in for their sink when
+/// the analyzer describes owned stages.
+fn token_stream_from_str_impl<A: Analyzer + ?Sized>(
+    analyzer: &A,
+    field_name: Option<&str>,
+    text: &str,
+    use_owned: bool,
+) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+    if analyzer.analyzer_state().is_closed() {
+        return Err(LuceneError::already_closed(
+            "this Analyzer is closed".to_string(),
+        ));
+    }
+    let components = analyzer
+        .analyzer_state()
+        .reuse_strategy()
+        .get_reusable_components(analyzer.analyzer_state(), field_name);
+    // rmp #679/#682: the components' owned stream, when the analyzer
+    // describes owned stages ([`owned::OwnedTokenStream`]).
+    if use_owned {
+        if let Some(owned) = components.as_ref().and_then(|c| c.borrow().owned.clone()) {
+            owned.borrow_mut().set_text(text)?;
+            return Ok(owned);
+        }
+    }
+    // PERF: the components' reader is reused, as Java reuses it
+    // (`Analyzer.java:184-188`), and its buffer with it.
+    let str_reader = components
+        .as_ref()
+        .and_then(|c| c.borrow().reusable_string_reader.clone())
+        .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
+    str_reader.borrow_mut().set_value(text);
+    let reader = analyzer.init_reader(
+        field_name,
+        Box::new(SharedStringReader(Arc::clone(&str_reader))),
+    );
+    let components = match components {
+        Some(c) => c,
+        None => {
+            let c = owned::new_reusable_components(analyzer, field_name)?;
+            analyzer
+                .analyzer_state()
+                .reuse_strategy()
+                .set_reusable_components(analyzer.analyzer_state(), field_name, Arc::clone(&c));
+            c
+        }
+    };
+    if use_owned {
+        if let Some(owned) = components.borrow().owned.clone() {
+            // New components: `initReader` returned the reader unchanged (the
+            // contract of `owned_stages`), so the owned stream takes the text.
+            owned.borrow_mut().set_text(text)?;
+            return Ok(owned);
+        }
+    }
+    // PERF: one borrow for the reader and the stream (rmp #679).
+    let mut components = components.borrow_mut();
+    components.set_reader(reader)?;
+    components.reusable_string_reader = Some(str_reader);
+    Ok(components.token_stream())
+}
+
+/// The stream `Analyzer.tokenStream(String, String)` returns through the
+/// components' shared sink, never their owned stream: the reference of the
+/// owned-stream identity tests.
+///
+/// # Errors
+///
+/// What `tokenStream` raises.
+#[doc(hidden)]
+pub fn shared_token_stream_from_str(
+    analyzer: &dyn Analyzer,
+    field_name: Option<&str>,
+    text: &str,
+) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
+    token_stream_from_str_impl(analyzer, field_name, text, false)
+}
 
 /// Builds [`TokenStream`]s that analyze text, equivalent to
 /// `org.apache.lucene.analysis.Analyzer`.
@@ -1563,6 +1697,29 @@ pub trait Analyzer: Debug + Send + Sync {
     /// class overrides `toString()` overrides this method with that text.
     fn analyzer_to_string(&self) -> String {
         crate::index::index_reader::java_object_to_string(self.java_class_name(), self)
+    }
+
+    /// This analyzer as [`Any`], for a crate-internal static fast path over a
+    /// core analyzer type; `None` (the default) keeps every consumer on the
+    /// generic path.
+    ///
+    /// **No counterpart in Lucene 10.5.0**: a hidden devirtualisation hook,
+    /// as the other hot traits' `as_any` (rmp #679 ownership prototype).
+    #[doc(hidden)]
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    /// This analyzer's components for `field_name` as owned stages (see
+    /// [`owned`]), or `None` (the default) for an analyzer whose consumers
+    /// use the shared stream. An implementation that answers must describe
+    /// exactly the tokenizer and filters `create_components(field_name)`
+    /// builds, with the analyzer's current settings, and no `init_reader`.
+    ///
+    /// **No counterpart in Lucene 10.5.0** (rmp #679 owned chain).
+    #[doc(hidden)]
+    fn owned_stages(&self, _field_name: Option<&str>) -> Option<Result<owned::OwnedStages>> {
+        None
     }
 
     /// Creates a new [`TokenStreamComponents`] instance for `field_name`.
@@ -1669,7 +1826,7 @@ pub trait Analyzer: Debug + Send + Sync {
         let components = match components {
             Some(c) => c,
             None => {
-                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
+                let c = owned::new_reusable_components(self, field_name)?;
                 self.analyzer_state()
                     .reuse_strategy()
                     .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
@@ -1717,43 +1874,7 @@ pub trait Analyzer: Debug + Send + Sync {
         field_name: Option<&str>,
         text: &str,
     ) -> Result<Arc<AtomicRefCell<dyn TokenStream>>> {
-        if self.analyzer_state().is_closed() {
-            return Err(LuceneError::already_closed(
-                "this Analyzer is closed".to_string(),
-            ));
-        }
-        let components = self
-            .analyzer_state()
-            .reuse_strategy()
-            .get_reusable_components(self.analyzer_state(), field_name);
-        // PERF: the components' reader is reused, as Java reuses it
-        // (`Analyzer.java:184-188`), and its buffer with it.
-        let str_reader = components
-            .as_ref()
-            .and_then(|c| c.borrow().reusable_string_reader.clone())
-            .unwrap_or_else(|| Arc::new(AtomicRefCell::new(ReusableStringReader::new())));
-        str_reader.borrow_mut().set_value(text);
-        let reader = self.init_reader(
-            field_name,
-            Box::new(SharedStringReader(Arc::clone(&str_reader))),
-        );
-        let components = match components {
-            Some(c) => c,
-            None => {
-                let c = Arc::new(AtomicRefCell::new(self.create_components(field_name)?));
-                self.analyzer_state()
-                    .reuse_strategy()
-                    .set_reusable_components(self.analyzer_state(), field_name, Arc::clone(&c));
-                c
-            }
-        };
-        {
-            let mut components = components.borrow_mut();
-            components.set_reader(reader)?;
-            components.reusable_string_reader = Some(str_reader);
-        }
-        let stream = components.borrow().token_stream();
-        Ok(stream)
+        token_stream_from_str_impl(self, field_name, text, true)
     }
 
     /// Normalizes `text` to the representation it would have in the index.
@@ -2495,13 +2616,9 @@ mod tests {
         tokenizer.reset().unwrap();
         // Without close, set_reader must be rejected.
         let result = tokenizer.set_reader(Box::new(StringCharReader::new("b")));
-        assert!(matches!(
-            result,
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(result, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { .. }))
+        );
     }
 
     /// Java's `Tokenizer.reset()` cannot fail: without a reader it installs
@@ -2512,17 +2629,13 @@ mod tests {
     fn tokenizer_reset_without_a_reader_fails_on_the_first_read() {
         let mut tokenizer = Tokenizer::new(WhitespaceTokenizer::default());
         let reset = tokenizer.reset();
-        assert!(matches!(
-            reset,
-            Err(LuceneError { kind: LuceneErrorKind::IllegalState { ref message, .. }, .. }) if message == ILLEGAL_STATE_READER_MESSAGE
-        ));
+        assert!(
+            matches!(reset, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { ref message, .. } if message == ILLEGAL_STATE_READER_MESSAGE))
+        );
         let mut tokenizer = Tokenizer::new(CountingLogic::default());
         tokenizer.reset().unwrap();
         match tokenizer.increment_token() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
                 assert_eq!(message, ILLEGAL_STATE_READER_MESSAGE)
             }
             other => panic!("{other:?}"),
@@ -3387,7 +3500,7 @@ mod reader_default_tests {
         assert!(StringCharReader::new("").ready().unwrap());
         r.close().unwrap();
         assert!(r.mark_supported());
-        match r.ready().unwrap_err().kind {
+        match r.ready().unwrap_err().into_kind() {
             LuceneErrorKind::Io(e) => assert_eq!(
                 crate::store::java_nio_file::java_to_string(&e),
                 "java.io.IOException: Stream closed"

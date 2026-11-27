@@ -14,6 +14,7 @@ use crate::index::{
 };
 use crate::search::batch_score_bulk_scorer::BatchScoreBulkScorer;
 use crate::search::bulk_scorer::BulkScorer;
+use crate::search::constant_score_scorer::ConstantScoreScorer;
 use crate::search::constant_score_scorer_supplier::ConstantScoreScorerSupplier;
 use crate::search::doc_id_set_iterator::DocIdSetIterator;
 use crate::search::index_searcher::IndexSearcher;
@@ -81,6 +82,27 @@ impl TermQuery {
     }
 }
 
+impl TermQuery {
+    /// The `TermStates` `createWeight` builds (`TermQuery.java:298-310`): the
+    /// pre-built ones when they were built for this searcher, else fresh ones.
+    fn term_states_for(
+        &self,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+    ) -> Result<Arc<TermStates>> {
+        let context = searcher.get_top_reader_context();
+        Ok(match self.per_reader_term_state.as_ref() {
+            Some(states) if states.was_built_for(context) => Arc::clone(states),
+            // PRTS was not pre-built for this IndexSearcher.
+            _ => Arc::new(TermStates::build(
+                searcher,
+                &self.term,
+                score_mode.needs_scores(),
+            )?),
+        })
+    }
+}
+
 impl Query for TermQuery {
     fn as_term_query(&self) -> Option<&TermQuery> {
         Some(self)
@@ -123,19 +145,27 @@ impl Query for TermQuery {
         score_mode: ScoreMode,
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        let context = searcher.get_top_reader_context();
-        let term_state = match self.per_reader_term_state.as_ref() {
-            Some(states) if states.was_built_for(context) => Arc::clone(states),
-            // PRTS was not pre-built for this IndexSearcher.
-            _ => Arc::new(TermStates::build(
-                searcher,
-                &self.term,
-                score_mode.needs_scores(),
-            )?),
-        };
-
+        let term_state = self.term_states_for(searcher, score_mode)?;
         Ok(Arc::new(TermWeight::new(
             self.clone(),
+            searcher,
+            score_mode,
+            boost,
+            Some(term_state),
+        )?))
+    }
+
+    /// The weight keeps the shared query itself, as Java's inner `TermWeight`
+    /// references `TermQuery.this`.
+    fn create_weight_shared(
+        self: Arc<Self>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+    ) -> Result<Arc<dyn Weight>> {
+        let term_state = self.term_states_for(searcher, score_mode)?;
+        Ok(Arc::new(TermWeight::from_shared(
+            self,
             searcher,
             score_mode,
             boost,
@@ -170,8 +200,13 @@ use crate::search::weight::Weight;
 ///
 /// Equivalent to the inner `final class TermQuery.TermWeight`.
 pub struct TermWeight {
-    query: TermQuery,
-    query_handle: Arc<dyn Query>,
+    /// `TermQuery.this`: the query the weight was made for, held once and
+    /// handed out by [`get_query`](Weight::get_query).
+    ///
+    /// PERF: Java's inner class references the query and its term; this port
+    /// kept the query, a second copy of it for `get_query` and a copy of its
+    /// term, three copies made for every term of every query.
+    query: Arc<TermQuery>,
     similarity: Arc<dyn Similarity>,
     /// `None` when the term does not exist in any segment, in which case the
     /// similarity is never used.
@@ -207,12 +242,24 @@ impl TermWeight {
         boost: f32,
         term_states: Option<Arc<TermStates>>,
     ) -> Result<Self> {
+        Self::from_shared(Arc::new(query), searcher, score_mode, boost, term_states)
+    }
+
+    /// [`new`](Self::new) for a query held by shared reference, which the
+    /// weight keeps instead of a copy.
+    pub(crate) fn from_shared(
+        query: Arc<TermQuery>,
+        searcher: &IndexSearcher,
+        score_mode: ScoreMode,
+        boost: f32,
+        term_states: Option<Arc<TermStates>>,
+    ) -> Result<Self> {
         if score_mode.needs_scores() && term_states.is_none() {
             return Err(LuceneError::illegal_state(
                 "termStates are required when scores are needed".to_string(),
             ));
         }
-        let term = query.get_term().clone();
+        let term = query.get_term();
         let similarity = Arc::clone(searcher.get_similarity());
 
         let (collection_stats, term_stats) = if score_mode.needs_scores() {
@@ -223,7 +270,7 @@ impl TermWeight {
                 searcher.collection_statistics(term.field())?,
                 if states.doc_freq()? > 0 {
                     Some(searcher.term_statistics(
-                        &term,
+                        term,
                         states.doc_freq()?,
                         states.total_term_freq()?,
                     )?)
@@ -262,10 +309,8 @@ impl TermWeight {
             }
         };
 
-        let query_handle: Arc<dyn Query> = Arc::new(query.clone());
         Ok(Self {
             query,
-            query_handle,
             similarity,
             sim_scorer,
             term_states,
@@ -355,18 +400,33 @@ impl TermWeight {
             "The top-reader used to create Weight is not the same as the current reader's \
              top-reader ({context}"
         );
-        let Some(state) = self.term_state(context)? else {
+        // `termStates.get(context)`, `null` meaning no supplier
+        // (`TermQuery.java:125-128`).
+        let states = self
+            .term_states
+            .as_ref()
+            .ok_or_else(LuceneError::null_pointer)?;
+        let Some(state) = states.get_supplier(context)? else {
             return Ok(None);
         };
         let reader = context.leaf_reader();
-        let Some(mut terms_enum) = Self::seek(&reader, self.term(), &*state)? else {
-            return Ok(None);
+        let mut terms_enum = match state {
+            Some(state) => Self::seek(&reader, self.term(), &*state)?,
+            // A supplier of a `null` state: the term is absent from this leaf,
+            // but the clause stays, scoring nothing (`TermQuery.java:149-151`).
+            None => None,
         };
-        let doc_freq = terms_enum.doc_freq()?;
+        let absent = terms_enum.is_none();
+        let doc_freq = match terms_enum {
+            Some(ref mut terms_enum) => terms_enum.doc_freq()?,
+            // `te == null ? 0 : te.docFreq()` (`TermQuery.java:183`).
+            None => 0,
+        };
         Ok(Some(TermScorerSupplier {
             reader,
             field: self.term().field().to_string(),
-            terms_enum: Some(terms_enum),
+            terms_enum,
+            absent,
             doc_freq,
             sim_scorer: self.sim_scorer.clone(),
             score_mode: self.score_mode,
@@ -383,7 +443,7 @@ impl SegmentCacheable for TermWeight {
 
 impl Weight for TermWeight {
     fn get_query(&self) -> Arc<dyn Query> {
-        Arc::clone(&self.query_handle)
+        Arc::clone(&self.query) as Arc<dyn Query>
     }
 
     fn matches(&self, context: &LeafReaderContext, doc: i32) -> Result<Option<Arc<dyn Matches>>> {
@@ -431,7 +491,12 @@ impl Weight for TermWeight {
     }
 
     fn explain(&self, context: &LeafReaderContext, doc: i32) -> Result<Explanation> {
-        if let Some(mut supplier) = self.term_scorer_supplier(context)? {
+        if let Some(mut supplier) = self
+            .term_scorer_supplier(context)?
+            .filter(|supplier| !supplier.absent)
+        {
+            // An absent term's supplier gives an empty scorer, whose
+            // `advance(doc)` never lands on `doc`.
             let mut scorer = supplier.term_scorer()?;
             let new_doc = scorer.iterator().advance(doc)?;
             if new_doc == doc {
@@ -521,6 +586,10 @@ pub struct TermScorerSupplier {
     reader: Arc<dyn LeafReader>,
     field: String,
     terms_enum: Option<Box<dyn TermsEnum>>,
+    /// The leaf's state supplier gave a `null` state: `getTermsEnum()` is
+    /// `null` and `get` returns an empty `ConstantScoreScorer`
+    /// (`TermQuery.java:149-151`).
+    absent: bool,
     doc_freq: i32,
     sim_scorer: Option<SharedSimScorer>,
     score_mode: ScoreMode,
@@ -592,6 +661,15 @@ impl TermScorerSupplier {
 
 impl ScorerSupplier for TermScorerSupplier {
     fn get(&mut self, _lead_cost: i64) -> Result<Box<dyn Scorer>> {
+        if self.absent {
+            // `new ConstantScoreScorer(0f, scoreMode, DocIdSetIterator.empty())`
+            // (`TermQuery.java:150-151`).
+            return Ok(Box::new(ConstantScoreScorer::from_iterator(
+                0.0,
+                self.score_mode,
+                Box::new(crate::search::doc_id_set_iterator::empty()),
+            )));
+        }
         if self.terms_enum.is_none() {
             return Err(LuceneError::illegal_state(
                 "ScorerSupplier.get(long) must be called at most once".to_string(),

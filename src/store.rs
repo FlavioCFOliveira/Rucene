@@ -6738,7 +6738,7 @@ impl FileSwitchDirectory {
     }
 
     fn is_not_found(err: &LuceneError) -> bool {
-        matches!(err, LuceneError { kind: LuceneErrorKind::Io(io_err), .. } if io_err.kind() == io::ErrorKind::NotFound)
+        matches!(&err.kind, LuceneErrorKind::Io(io_err) if io_err.kind() == io::ErrorKind::NotFound)
     }
 }
 
@@ -7169,10 +7169,12 @@ impl NRTCachingDirectory {
     fn slow_file_exists(dir: &dyn Directory, name: &str) -> Result<bool> {
         match dir.file_length(name) {
             Ok(_) => Ok(true),
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(error),
-                ..
-            }) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(ref __lerr)
+                if let LuceneErrorKind::Io(error) = &__lerr.kind
+                    && (error.kind() == io::ErrorKind::NotFound) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error),
         }
     }
@@ -7441,13 +7443,6 @@ pub const LIMIT_MAX_BITS_PER_BLOCK: usize = 31;
 /// Equivalent to `ByteBuffersDataOutput.MAX_BLOCKS_BEFORE_BLOCK_EXPANSION`
 /// (`public static final int`, `ByteBuffersDataOutput.java:57`).
 pub const MAX_BLOCKS_BEFORE_BLOCK_EXPANSION: usize = 100;
-
-/// Number of characters converted at a time by
-/// `ByteBuffersDataOutput::write_long_string`.
-///
-/// Equivalent to
-/// `org.apache.lucene.store.ByteBuffersDataOutput.MAX_CHARS_PER_WINDOW`.
-const MAX_CHARS_PER_WINDOW: usize = 1024;
 
 /// A heap `java.nio.ByteBuffer` view of a byte block: the block's content is
 /// shared by every view of it, and each view has its own position and limit.
@@ -9136,9 +9131,10 @@ impl ByteBuffersDataOutput {
     /// the [`write_string`](DataOutput::write_string) override, which reaches
     /// here when the string does not fit in what is left of the current block.
     ///
-    /// The string is converted a window at a time so that the whole UTF-8 form
-    /// is never held at once, which is the reason Lucene splits this out of
-    /// `writeString`.
+    /// Lucene converts the string a window at a time so that the whole UTF-8
+    /// form is never held at once, which is why it splits this out of
+    /// `writeString`; a Rust `str` is already UTF-8, so its bytes are written
+    /// directly, with the same result.
     ///
     /// Equivalent to the private
     /// `org.apache.lucene.store.ByteBuffersDataOutput#writeLongString`.
@@ -9147,28 +9143,13 @@ impl ByteBuffersDataOutput {
     ///
     /// Returns any error raised while writing.
     fn write_long_string(&mut self, byte_len: usize, s: &str) -> Result<()> {
-        let units: Vec<u16> = s.encode_utf16().collect();
-        let mut buf = vec![
-            0u8;
-            byte_len.min(
-                crate::util::unicode_util::MAX_UTF8_BYTES_PER_CHAR * MAX_CHARS_PER_WINDOW
-            )
-        ];
-        let end = units.len();
-        let mut i = 0usize;
-        while i < end {
-            // do one fewer chars than MAX_CHARS_PER_WINDOW in case we run into
-            // an unpaired surrogate below and need to increase the step to
-            // cover the lower surrogate as well
-            let mut step = (end - i).min(MAX_CHARS_PER_WINDOW - 1);
-            if i + step < end && (0xD800..=0xDBFF).contains(&units[i + step - 1]) {
-                step += 1;
-            }
-            let up_to = crate::util::UnicodeUtil::utf16_to_utf8(&units, i, step, &mut buf);
-            self.write_bytes(&buf, 0, up_to)?;
-            i += step;
-        }
-        Ok(())
+        // PERF: Java converts the string a window of `MAX_CHARS_PER_WINDOW`
+        // (1024) UTF-16 units at a time, each window kept whole on a surrogate pair,
+        // so the concatenated windows are the string's UTF-8 form. A Rust
+        // `str` already is that form: its bytes are written as they are,
+        // instead of through a UTF-16 copy of the whole string and a window
+        // buffer.
+        self.write_bytes(s.as_bytes(), 0, byte_len)
     }
 }
 
@@ -10284,8 +10265,14 @@ impl<W: Write> Write for ChunkedOutput<W> {
 pub struct OutputStreamIndexOutput<W: Write + Send + Sync> {
     name: String,
     resource_description: String,
-    out: io::BufWriter<W>,
-    crc: BufferedChecksum,
+    /// `os`: Java's `XBufferedOutputStream` over a `CheckedOutputStream(out,
+    /// crc)` (`OutputStreamIndexOutput.java:44-50`). The checksum is taken
+    /// below the buffer, on the bytes the buffer passes down, as in Java.
+    ///
+    /// PERF (rmp #679): a write is one buffer copy; the CRC runs over whole
+    /// buffered chunks instead of a second per-write copy into a
+    /// [`BufferedChecksum`].
+    out: io::BufWriter<CheckedWriter<W>>,
     bytes_written: i64,
     flushed_on_close: bool,
     /// `DataOutput.copyBuffer`.
@@ -10313,8 +10300,13 @@ impl<W: Write + Send + Sync> OutputStreamIndexOutput<W> {
         Ok(Self {
             name: name.into(),
             resource_description: resource_description.into(),
-            out: io::BufWriter::with_capacity(buffer_size, out),
-            crc: BufferedChecksum::new(),
+            out: io::BufWriter::with_capacity(
+                buffer_size,
+                CheckedWriter {
+                    inner: out,
+                    crc: crc32fast::Hasher::new(),
+                },
+            ),
             bytes_written: 0,
             flushed_on_close: false,
             copy_buffer: CopyBuffer::default(),
@@ -10340,7 +10332,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
     }
 
     fn write_byte(&mut self, b: u8) -> Result<()> {
-        self.crc.update(b);
         self.out.write_all(&[b]).map_err(LuceneError::from)?;
         self.bytes_written += 1;
         Ok(())
@@ -10367,7 +10358,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
             ));
         }
         let end = offset + len;
-        self.crc.update_bytes(b, offset, len)?;
         self.out
             .write_all(&b[offset..end])
             .map_err(LuceneError::from)?;
@@ -10379,7 +10369,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         let mut buf = [0u8; 2];
         buf[0] = i as u8;
         buf[1] = (i >> 8) as u8;
-        self.crc.update_bytes(&buf, 0, 2)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 2;
         Ok(())
@@ -10391,7 +10380,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         buf[1] = (i >> 8) as u8;
         buf[2] = (i >> 16) as u8;
         buf[3] = (i >> 24) as u8;
-        self.crc.update_bytes(&buf, 0, 4)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 4;
         Ok(())
@@ -10407,7 +10395,6 @@ impl<W: Write + Send + Sync> DataOutput for OutputStreamIndexOutput<W> {
         buf[5] = (i >> 40) as u8;
         buf[6] = (i >> 48) as u8;
         buf[7] = (i >> 56) as u8;
-        self.crc.update_bytes(&buf, 0, 8)?;
         self.out.write_all(&buf).map_err(LuceneError::from)?;
         self.bytes_written += 8;
         Ok(())
@@ -10427,11 +10414,14 @@ impl<W: Write + Send + Sync> IndexOutput for OutputStreamIndexOutput<W> {
         self.bytes_written
     }
 
+    /// Java flushes the buffer and reads the CRC (`os.flush(); return
+    /// crc.getValue()`). The same value without the flush, which keeps this
+    /// method `&self`: the CRC of the bytes already passed down, continued
+    /// over the bytes still in the buffer.
     fn checksum(&self) -> Result<i64> {
-        // The CRC is updated on every write, so no flush is required to obtain the
-        // current checksum.  This also avoids interior mutability, keeping the
-        // type `Sync`.
-        Ok(self.crc.get_value())
+        let mut crc = self.out.get_ref().crc.clone();
+        crc.update(self.out.buffer());
+        Ok(i64::from(crc.finalize()))
     }
 
     fn resource_description(&self) -> &str {
@@ -10440,6 +10430,26 @@ impl<W: Write + Send + Sync> IndexOutput for OutputStreamIndexOutput<W> {
 
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+/// `java.util.zip.CheckedOutputStream` over a `CRC32`: forwards every write
+/// to `inner` and checksums exactly the bytes `inner` accepted.
+#[derive(Debug)]
+pub struct CheckedWriter<W> {
+    inner: W,
+    crc: crc32fast::Hasher,
+}
+
+impl<W: Write> Write for CheckedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.crc.update(&buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
     }
 }
 
@@ -10547,7 +10557,7 @@ impl IndexOutput for FSIndexOutput {
     /// suppressed by a failure to flush.
     fn close(&mut self) -> Result<()> {
         let flushed = self.0.close();
-        let closed = self.0.out.get_mut().inner.0.close();
+        let closed = self.0.out.get_mut().inner.inner.0.close();
         flushed?;
         closed.map_err(LuceneError::from)
     }
@@ -11003,11 +11013,10 @@ impl Directory for FSDirectory {
             ) {
                 Ok(out) => return Ok(Box::new(out)),
                 // Retry with next incremented name
-                Err(LuceneError {
-                    kind: LuceneErrorKind::Io(e),
-                    ..
-                }) if nio::java_class_of(&e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
-                    || e.kind() == io::ErrorKind::AlreadyExists =>
+                Err(ref __lerr)
+                    if let LuceneErrorKind::Io(e) = &__lerr.kind
+                        && (nio::java_class_of(e) == nio::FILE_ALREADY_EXISTS_EXCEPTION
+                            || e.kind() == io::ErrorKind::AlreadyExists) =>
                 {
                     continue;
                 }
@@ -12100,11 +12109,9 @@ mod tests {
     fn to_array_copy_refuses_content_past_a_java_array() {
         let mut output = ByteBuffersDataOutput::new();
         output.completed = vec![Arc::new(vec![0u8; 1 << 30]), Arc::new(vec![0u8; 1 << 30])];
-        assert!(matches!(
-            output.to_array_copy(),
-            Err(LuceneError { kind: LuceneErrorKind::Other(ref message), .. })
-                if message == "Data exceeds maximum size of a single byte array: 2147483648"
-        ));
+        assert!(
+            matches!(output.to_array_copy(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Other(ref message) if message == "Data exceeds maximum size of a single byte array: 2147483648"))
+        );
     }
 
     /// Writes all primitive encodings to a [`VecDataOutput`] and reads
@@ -13020,7 +13027,7 @@ mod tests {
 
     /// The message of an `IllegalArgumentException`.
     fn illegal_argument_message(error: LuceneError) -> String {
-        match error.kind {
+        match error.into_kind() {
             LuceneErrorKind::IllegalArgument { message, .. } => message,
             other => panic!("not an IllegalArgumentException: {other:?}"),
         }
@@ -13871,7 +13878,7 @@ mod tests {
         // deleted (here, the file that was already there).
         let err = dst.copy_from(&src, "a.bin", "b.bin", ctx).unwrap_err();
         assert!(
-            matches!(&err, LuceneError { kind: LuceneErrorKind::Io(e), .. } if e.kind() == io::ErrorKind::AlreadyExists),
+            matches!(&err.kind, LuceneErrorKind::Io(e) if e.kind() == io::ErrorKind::AlreadyExists),
             "{err}"
         );
         assert_eq!(
@@ -13893,12 +13900,9 @@ mod tests {
         let dir = ByteBuffersDirectory::new();
         let ctx: &dyn IOContext = &*DEFAULT_IO_CONTEXT;
         let class_and_message = |e: LuceneError| match e {
-            LuceneError {
-                kind: LuceneErrorKind::Io(io),
-                ..
-            } => (
-                nio::java_class_of(&io).to_string(),
-                nio::java_message_of(&io).unwrap(),
+            ref __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => (
+                nio::java_class_of(io).to_string(),
+                nio::java_message_of(io).unwrap(),
                 io.kind(),
             ),
             other => panic!("not an IOException: {other}"),
@@ -14150,12 +14154,11 @@ mod tests {
         let dir = ByteBuffersDirectory::new();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(
-                    message,
+                    *message,
                     format!(
                         "lock instance already obtained: (dir={}, lockName=x)",
                         dir.directory_to_string()
@@ -14163,7 +14166,7 @@ mod tests {
                 );
                 assert!(
                     matches_java_text(
-                        &message,
+                        message,
                         "lock instance already obtained: (dir=ByteBuffersDirectory@{hash} \
                          lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{hash}, \
                          lockName=x)"
@@ -14177,10 +14180,9 @@ mod tests {
 
         dir.close().unwrap();
         match dir.ensure_open() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
@@ -14203,10 +14205,9 @@ mod tests {
         let native = NIOFSDirectory::open(tmp.path().join("closed")).unwrap();
         native.close().unwrap();
         match native.obtain_lock("y") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {:?}", other.err()),
@@ -14239,21 +14240,22 @@ mod tests {
         .unwrap();
         let lock = dir.obtain_lock("x").unwrap();
         match dir.obtain_lock("x") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { message, .. },
-                ..
-            }) => assert!(
-                matches_java_text(
-                    &message,
-                    &format!(
-                        "lock instance already obtained: (dir=NIOFSDirectory@{} \
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind =>
+            {
+                assert!(
+                    matches_java_text(
+                        message,
+                        &format!(
+                            "lock instance already obtained: (dir=NIOFSDirectory@{} \
                          lockFactory=org.apache.lucene.store.SingleInstanceLockFactory@{{hash}}, \
                          lockName=x)",
-                        dir.get_directory().unwrap()
-                    )
-                ),
-                "{message}"
-            ),
+                            dir.get_directory().unwrap()
+                        )
+                    ),
+                    "{message}"
+                )
+            }
             other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
         }
         lock.close().unwrap();
@@ -14361,16 +14363,17 @@ mod tests {
         ));
 
         match NativeFSLockFactory.obtain_lock(&bb, "x") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!(
-                    "NativeFSLockFactory can only be used with FSDirectory subclasses, got: {}",
-                    bb.directory_to_string()
+            Err(ref __lerr)
+                if let LuceneErrorKind::UnsupportedOperation { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!(
+                        "NativeFSLockFactory can only be used with FSDirectory subclasses, got: {}",
+                        bb.directory_to_string()
+                    )
                 )
-            ),
+            }
             other => panic!(
                 "expected UnsupportedOperationException, got {:?}",
                 other.err()
@@ -14457,10 +14460,7 @@ mod tests {
         dir.delete_file("pending").unwrap();
         assert!(dir.get_pending_deletions().unwrap().contains("pending"));
         match dir.rename("pending", "moved") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(error),
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::Io(error) = &__lerr.kind => {
                 assert_eq!(error.kind(), io::ErrorKind::NotFound);
                 assert_eq!(
                     error.to_string(),
@@ -14560,13 +14560,14 @@ mod tests {
             file.write_all(b"x").unwrap();
         }
         match lock.ensure_valid() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!("Unexpected lock file size: 1, (lock={})", rendered("valid"))
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!("Unexpected lock file size: 1, (lock={})", rendered("valid"))
+                )
+            }
             other => {
                 lock.close().unwrap();
                 panic!("an AlreadyClosedException, got {other:?}");
@@ -14575,13 +14576,14 @@ mod tests {
 
         lock.close().unwrap();
         match lock.ensure_valid() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!("Lock instance already released: {}", rendered("invalid"))
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!("Lock instance already released: {}", rendered("invalid"))
+                )
+            }
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -14633,10 +14635,11 @@ mod tests {
             file_time_to_string(original)
         );
         match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => assert_eq!(message, expected),
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(*message, expected)
+            }
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -14691,10 +14694,11 @@ mod tests {
             file_time_to_string(original)
         );
         match lock.ensure_valid() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => assert_eq!(message, expected),
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(*message, expected)
+            }
             other => panic!("an AlreadyClosedException, got {other:?}"),
         }
     }
@@ -14745,8 +14749,8 @@ mod tests {
         .unwrap();
         let released = |lock: &dyn Lock, path: &Path, creation_time: &str| {
             match lock.ensure_valid() {
-            Err(LuceneError { kind: LuceneErrorKind::AlreadyClosed { message, .. }, .. }) => assert_eq!(
-                message,
+            Err(ref __lerr) if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind => assert_eq!(
+                *message,
                 format!(
                     "Lock instance already released: SimpleFSLock(path={},creationTime={creation_time})",
                     path.display()
@@ -14771,13 +14775,14 @@ mod tests {
         let b_created = creation_time(&b_path);
         std::fs::remove_file(&b_path).unwrap();
         match b.close() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockReleaseFailed { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "Lock file cannot be safely removed. Manual intervention is recommended."
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockReleaseFailed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    message,
+                    "Lock file cannot be safely removed. Manual intervention is recommended."
+                )
+            }
             other => panic!("expected LockReleaseFailedException, got {other:?}"),
         }
         b.close()
@@ -14839,10 +14844,9 @@ mod tests {
                 println!("child obtain: ok");
                 lock.close().unwrap();
             }
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind =>
+            {
                 println!("child obtain: LockObtainFailedException: {message}")
             }
             Err(other) => println!("child obtain: {other:?}"),
@@ -14945,13 +14949,14 @@ mod tests {
         let a = dir.obtain_lock("a.lock").unwrap();
         let a_path = dir.get_directory().unwrap().as_std_path().join("a.lock");
         match dir.obtain_lock("a.lock") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::LockObtainFailed { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!("Lock held by this virtual machine: {}", a_path.display())
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::LockObtainFailed { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!("Lock held by this virtual machine: {}", a_path.display())
+                )
+            }
             other => panic!("expected LockObtainFailedException, got {:?}", other.err()),
         }
         a.close().unwrap();
@@ -14965,10 +14970,7 @@ mod tests {
         let b_path = dir.get_directory().unwrap().as_std_path().join("b.lock");
         std::fs::remove_file(&b_path).unwrap();
         match b.ensure_valid() {
-            Err(LuceneError {
-                kind: LuceneErrorKind::Io(error),
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::Io(error) = &__lerr.kind => {
                 assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
                 assert_eq!(error.to_string(), b_path.display().to_string());
             }
@@ -15000,16 +15002,17 @@ mod tests {
         let result = c.ensure_valid();
         c.close().unwrap();
         match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => assert!(
-                message.starts_with(&format!(
-                    "Underlying file changed by an external force at {}, (lock=NativeFSLock(",
-                    file_time_to_string(ctime)
-                )),
-                "{message}"
-            ),
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                assert!(
+                    message.starts_with(&format!(
+                        "Underlying file changed by an external force at {}, (lock=NativeFSLock(",
+                        file_time_to_string(ctime)
+                    )),
+                    "{message}"
+                )
+            }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         }
     }
@@ -15070,10 +15073,11 @@ mod tests {
             )
         };
         let refused = |result: Result<Box<dyn Lock>>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { message, .. },
-                ..
-            }) => message,
+            Err(ref __lerr)
+                if let LuceneErrorKind::UnsupportedOperation { message, .. } = &__lerr.kind =>
+            {
+                message.clone()
+            }
             other => panic!(
                 "expected UnsupportedOperationException, got {:?}",
                 other.err()
@@ -15103,10 +15107,9 @@ mod tests {
     fn get_directory_refuses_a_closed_directory() {
         let tmp = tempfile::tempdir().unwrap();
         let closed = |result: Result<&nio::Path>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
@@ -15175,10 +15178,11 @@ mod tests {
         let rendered =
             "org.apache.lucene.store.SingleInstanceLockFactory$SingleInstanceLock@{hash}: x";
         let message = |result: Result<()>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => message,
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
+                message.clone()
+            }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         factory.locks.lock().unwrap().clear();
@@ -15399,19 +15403,20 @@ mod tests {
     #[test]
     fn nrt_caching_directory_closes_and_names_temp_files_as_lucene() {
         let closed_dir = |result: Result<Vec<String>>| match result {
-            Err(LuceneError {
-                kind: LuceneErrorKind::AlreadyClosed { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "this Directory is closed")
             }
             other => panic!("expected AlreadyClosedException, got {other:?}"),
         };
         let io_message = |error: LuceneError| match error {
-            LuceneError {
-                kind: LuceneErrorKind::Io(error),
-                ..
-            } if error.kind() == io::ErrorKind::Other => error.to_string(),
+            ref __lerr
+                if let LuceneErrorKind::Io(error) = &__lerr.kind
+                    && (error.kind() == io::ErrorKind::Other) =>
+            {
+                error.to_string()
+            }
             other => panic!("expected an IOException, got {other:?}"),
         };
         let flush = flush_io_context(FlushInfo::new(1, 10));
@@ -15591,13 +15596,7 @@ mod tests {
 
         IndexInput::seek(&mut input, 16).unwrap();
         let err = IndexInput::seek(&mut input, 8).unwrap_err();
-        assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::IllegalState { .. },
-                ..
-            }
-        ));
+        assert!(matches!(&err.kind, LuceneErrorKind::IllegalState { .. }));
         assert!(err.to_string().contains("cannot seek backwards"));
         assert!(err.to_string().contains("BufferedChecksumIndexInput"));
     }
@@ -15614,11 +15613,8 @@ mod tests {
             Ok(_) => panic!("expected clone to be unsupported"),
         };
         assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            }
+            &err.kind,
+            LuceneErrorKind::UnsupportedOperation { .. }
         ));
     }
 
@@ -15634,11 +15630,8 @@ mod tests {
             Ok(_) => panic!("expected slice to be unsupported"),
         };
         assert!(matches!(
-            err,
-            LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            }
+            &err.kind,
+            LuceneErrorKind::UnsupportedOperation { .. }
         ));
     }
 
@@ -16162,13 +16155,9 @@ mod tests {
         assert!(nested.read_byte().is_err(), "a slice ends at off + length");
 
         let default = dir.open_input("data.bin", &*DEFAULT_IO_CONTEXT).unwrap();
-        assert!(matches!(
-            default.slice("u", 500, 100),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(default.slice("u", 500, 100), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     /// `FSDirectory.open` picks `MMapDirectory` on a 64-bit platform
@@ -16500,12 +16489,13 @@ mod tests {
         log.push(format!("temp name: {}", tmp.name()));
         state(&dir, "temp", &mut log);
         match dir.rename("g", "t_x_0.tmp") {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => log.push(format!(
-                "rename onto cached: IllegalArgumentException: {message}"
-            )),
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                log.push(format!(
+                    "rename onto cached: IllegalArgumentException: {message}"
+                ))
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         }
         state(&dir, "after rename onto cached", &mut log);
@@ -17222,13 +17212,7 @@ mod tests {
         let error = fsd.close().unwrap_err();
         assert_eq!(error.to_string(), "I/O error: close refused");
         assert!(
-            matches!(
-                fsd.secondary_dir().ensure_open(),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::AlreadyClosed { .. },
-                    ..
-                })
-            ),
+            matches!(fsd.secondary_dir().ensure_open(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. })),
             "the secondary directory is closed"
         );
     }

@@ -68,10 +68,7 @@ pub fn mask(s: &str, dir: &str, rel: Option<&str>) -> String {
 /// `class\tmessage` of a Rust error as the oracles print a Java exception.
 pub fn lucene_error(e: &LuceneError) -> (String, String) {
     match e {
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "<null>".to_string()),
         ),

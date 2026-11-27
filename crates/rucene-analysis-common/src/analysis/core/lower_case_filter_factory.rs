@@ -116,4 +116,12 @@ impl TokenFilterFactory for LowerCaseFilterFactory {
     fn normalize(&self, input: Box<dyn TokenStream>) -> Result<Box<dyn TokenStream>> {
         self.create(input)
     }
+
+    /// `create(input)` as an owned stage: the core `LowerCaseFilter` the
+    /// filter extends (`LowerCaseFilterFactory.java:55-58`).
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        Some(Ok(Box::new(
+            rucene::analysis::lower_case_filter::OwnedLowerCaseFilter,
+        )))
+    }
 }

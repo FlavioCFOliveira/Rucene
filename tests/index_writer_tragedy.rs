@@ -179,18 +179,13 @@ fn id_doc(id: i32) -> Document {
 fn outcome<T>(result: &Result<T>) -> &'static str {
     match result {
         Ok(_) => "ok",
-        Err(LuceneError {
-            kind: LuceneErrorKind::Io(_),
-            ..
-        }) => "IOException",
-        Err(LuceneError {
-            kind: LuceneErrorKind::AlreadyClosed { .. },
-            ..
-        }) => "AlreadyClosedException",
-        Err(LuceneError {
-            kind: LuceneErrorKind::IllegalState { .. },
-            ..
-        }) => "IllegalStateException",
+        Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Io(_)) => "IOException",
+        Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }) => {
+            "AlreadyClosedException"
+        }
+        Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalState { .. }) => {
+            "IllegalStateException"
+        }
         Err(_) => "other",
     }
 }
@@ -201,10 +196,9 @@ fn outcome<T>(result: &Result<T>) -> &'static str {
 fn exception<T>(result: &Result<T>) -> String {
     match result {
         Ok(_) => "ok".to_string(),
-        Err(LuceneError {
-            kind: LuceneErrorKind::Io(error),
-            ..
-        }) => format!("IOException: {error}"),
+        Err(ref __lerr) if let LuceneErrorKind::Io(error) = &__lerr.kind => {
+            format!("IOException: {error}")
+        }
         // No other class is expected here; the variant is printed so a
         // mismatch shows what this port raised.
         Err(error) => format!("{error:?}"),
@@ -824,30 +818,24 @@ fn a_merge_that_cannot_create_the_term_vectors_index_leaves_lucenes_files() {
 /// of the Java throwable this port raises `error` in place of.
 fn describe(error: &LuceneError) -> String {
     match error {
-        LuceneError {
-            kind: LuceneErrorKind::MaxBytesLengthExceeded(message),
-            ..
-        } => format!("MaxBytesLengthExceededException: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        } => format!("IllegalArgumentException: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        } => format!("IllegalStateException: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::AlreadyClosed { message, .. },
-            ..
-        } => format!("AlreadyClosedException: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(message),
-            ..
-        } => format!("AssertionError: {message}"),
-        LuceneError {
-            kind: LuceneErrorKind::Io(error),
-            ..
-        } => format!("IOException: {error}"),
+        __lerr if let LuceneErrorKind::MaxBytesLengthExceeded(message) = &__lerr.kind => {
+            format!("MaxBytesLengthExceededException: {message}")
+        }
+        __lerr if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind => {
+            format!("IllegalArgumentException: {message}")
+        }
+        __lerr if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
+            format!("IllegalStateException: {message}")
+        }
+        __lerr if let LuceneErrorKind::AlreadyClosed { message, .. } = &__lerr.kind => {
+            format!("AlreadyClosedException: {message}")
+        }
+        __lerr if let LuceneErrorKind::AssertionError(message) = &__lerr.kind => {
+            format!("AssertionError: {message}")
+        }
+        __lerr if let LuceneErrorKind::Io(error) = &__lerr.kind => {
+            format!("IOException: {error}")
+        }
         other => format!("{other:?}"),
     }
 }
@@ -1396,7 +1384,7 @@ fn a_rollback_during_a_failing_segment_info_write_does_not_deadlock() {
     let outcome = watchdog(60, || rollback_during_a_failing_merge_write(".si", 0.0));
     outcome.assert_rolled_back();
     assert!(
-        matches!(&outcome.merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure creating _2.si"),
+        matches!(&outcome.merged, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Io(error) if error.to_string() == "injected failure creating _2.si")),
         "{:?}",
         outcome.merged
     );
@@ -1524,7 +1512,7 @@ fn a_rollback_aborts_every_pending_merge_and_raises_the_first_failure() {
 
     let rolled_back = writer.rollback();
     assert!(
-        matches!(&rolled_back, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. }) if error.to_string() == "injected failure finishing _0,_1"),
+        matches!(&rolled_back, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Io(error) if error.to_string() == "injected failure finishing _0,_1")),
         "{rolled_back:?}"
     );
     let aborted: Vec<String> = log
@@ -1989,8 +1977,7 @@ fn a_failure_registering_a_merge_propagates_as_lucene_does() {
     let policy: Arc<dyn MergePolicy> = Arc::new(policy);
     let merged = writer.maybe_merge_with(&policy, MergeTrigger::Explicit, -1);
     assert!(
-        matches!(&merged, Err(LuceneError { kind: LuceneErrorKind::Io(error), .. })
-            if error.kind() == std::io::ErrorKind::NotFound && error.to_string().contains("_0.fdt")),
+        matches!(&merged, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::Io(error) if error.kind() == std::io::ErrorKind::NotFound && error.to_string().contains("_0.fdt"))),
         "{merged:?}"
     );
     let mut rust_lines: Vec<String> = log
@@ -2793,19 +2780,10 @@ fn freq_tokens_doc(freq: i32, terms: &[&'static str], field_type: FieldType) -> 
 /// `Class: message`, the simple-name form of the line `ChainCatch` prints for
 /// a throwable.
 fn java_line(error: &LuceneError) -> String {
-    let message = match error {
-        LuceneError {
-            kind: LuceneErrorKind::IllegalArgument { message, .. },
-            ..
-        }
-        | LuceneError {
-            kind: LuceneErrorKind::IllegalState { message, .. },
-            ..
-        }
-        | LuceneError {
-            kind: LuceneErrorKind::AlreadyClosed { message, .. },
-            ..
-        } => message.clone(),
+    let message = match &error.kind {
+        LuceneErrorKind::IllegalArgument { message, .. }
+        | LuceneErrorKind::IllegalState { message, .. }
+        | LuceneErrorKind::AlreadyClosed { message, .. } => message.clone(),
         other => other.to_string(),
     };
     format!("{}: {message}", error.java_simple_name())
@@ -3113,7 +3091,7 @@ fn a_stored_fields_failure_is_the_tragedy_itself_as_in_lucene() {
     assert!(!writer.is_open());
     let tragic = writer.get_tragic_exception().expect("the writer is tragic");
     assert!(
-        matches!(tragic.as_ref(), LuceneError { kind: LuceneErrorKind::Io(error), .. } if error.to_string() == "disk full creating _0.fdm"),
+        matches!(&tragic.as_ref().kind, LuceneErrorKind::Io(error) if error.to_string() == "disk full creating _0.fdm"),
         "{tragic:?}"
     );
 }

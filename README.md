@@ -49,7 +49,11 @@ The project aims at parity with Apache Lucene Core 10.5.0 along two dimensions:
 
 ## Getting started
 
-Prerequisite: Rust 1.89 or later (`rust-version` of every workspace crate).
+Prerequisites: Rust 1.89 or later (`rust-version` of every workspace crate).
+On x86-64 Linux, `.cargo/config.toml` builds for `target-cpu=x86-64-v3`, so the
+binaries require a CPU with AVX2, FMA and BMI2 (bit counts compile to `popcnt`
+and the vectorised kernels use 256-bit AVX2 lanes, as Lucene's JIT emits on the
+same hardware).
 
 ```bash
 cargo build                                   # the rucene crate

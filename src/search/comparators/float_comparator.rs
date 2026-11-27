@@ -125,14 +125,9 @@ impl FloatComparator {
 
     /// Equivalent to the private `FloatComparator.FloatLeafComparator.getValueForDoc(int)`.
     fn get_value_for_doc(&self, leaf: &mut NumericLeafState, doc: i32) -> Result<f32> {
-        let missing_value = self.missing_value;
-        let doc_values = leaf.doc_values();
-        if doc_values.advance_exact(doc)? {
-            let raw = doc_values.long_value()?;
-            Ok(f32::from_bits(raw as i32 as u32))
-        } else {
-            Ok(missing_value)
-        }
+        Ok(leaf
+            .exact_long_value(doc)?
+            .map_or(self.missing_value, |raw| f32::from_bits(raw as i32 as u32)))
     }
 
     /// Equivalent to `FloatComparator.FloatLeafComparator.bottomAsComparableLong()`.

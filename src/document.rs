@@ -2073,6 +2073,35 @@ impl IndexableField for Field {
         }
     }
 
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
+    }
+
+    /// `stringValue()` returns the field's own `String`: lent here, not
+    /// copied; a number is still rendered by `string_value`.
+    fn string_value_ref(&self) -> Option<crate::index::StringValueRef<'_>> {
+        match borrowed_string(&self.fields_data) {
+            Some(value) => Some(crate::index::StringValueRef::Borrowed(value)),
+            None => IndexableField::string_value(self).map(crate::index::StringValueRef::Owned),
+        }
+    }
+
+    /// The value `stored_value` returns, with a string or binary value lent
+    /// rather than copied.
+    fn stored_value_ref(&self) -> Result<Option<crate::index::StoredValueRef<'_>>> {
+        if !self.field_type.stored() {
+            return Ok(None);
+        }
+        match borrowed_stored_value(&self.fields_data) {
+            Some(value) => Ok(Some(value)),
+            None => {
+                Ok(IndexableField::stored_value(self)?.map(crate::index::StoredValueRef::Owned))
+            }
+        }
+    }
+
     /// Returns [`InvertableType::TOKEN_STREAM`] for every indexed field.
     ///
     /// Matches `org.apache.lucene.document.Field.invertableType()`, which
@@ -2108,6 +2137,10 @@ impl IndexableField for Field {
 pub struct Document {
     fields: Vec<Arc<dyn IndexableField>>,
 }
+
+/// `ArrayList.DEFAULT_CAPACITY`, the capacity the first `add` gives a list
+/// built with `new ArrayList<>()`.
+const ARRAY_LIST_DEFAULT_CAPACITY: usize = 10;
 
 const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
@@ -2157,7 +2190,7 @@ impl Document {
     /// for a field no one else holds: the document keeps the one reference
     /// to it, allocated once.
     pub fn add<F: IndexableField + 'static>(&mut self, field: F) {
-        self.fields.push(Arc::new(field));
+        self.push_field(Arc::new(field));
     }
 
     /// Adds a field that the caller, or other entries, also hold.
@@ -2167,6 +2200,20 @@ impl Document {
     /// than once, to one document or to several, and a change made through
     /// any holder is seen by every entry.
     pub fn add_shared(&mut self, field: Arc<dyn IndexableField>) {
+        self.push_field(field);
+    }
+
+    /// `fields.add(field)` on Java's `new ArrayList<>()`
+    /// (`Document.java:38, 61-63`).
+    ///
+    /// PERF: the first add sizes the list for `ArrayList.DEFAULT_CAPACITY`
+    /// (10) elements, as `ArrayList.grow` does for a list built with the
+    /// default constructor, instead of growing it by doubling from four, which
+    /// reallocated a five-field document's list once more.
+    fn push_field(&mut self, field: Arc<dyn IndexableField>) {
+        if self.fields.capacity() == 0 {
+            self.fields.reserve_exact(ARRAY_LIST_DEFAULT_CAPACITY);
+        }
         self.fields.push(field);
     }
 
@@ -2392,6 +2439,52 @@ fn mirrored_stored_value(
     }
 }
 
+/// The string a field's value cell holds, borrowed, or `None` when the
+/// value is not a string.
+fn borrowed_string(fields_data: &AtomicRefCell<FieldData>) -> Option<AtomicRef<'_, str>> {
+    AtomicRef::filter_map(fields_data.borrow(), |data| match data {
+        FieldData::String(value) => Some(value.as_str()),
+        _ => None,
+    })
+    .ok()
+}
+
+/// The bytes a field's value cell holds, borrowed, or `None` when the value
+/// is not a `BytesRef`.
+fn borrowed_bytes(fields_data: &AtomicRefCell<FieldData>) -> Option<AtomicRef<'_, BytesRef>> {
+    AtomicRef::filter_map(fields_data.borrow(), |data| match data {
+        FieldData::Bytes(value) => Some(value),
+        _ => None,
+    })
+    .ok()
+}
+
+/// The stored value of a string or binary value cell, borrowed; `None` for
+/// any other value.
+fn borrowed_stored_value(
+    fields_data: &AtomicRefCell<FieldData>,
+) -> Option<crate::index::StoredValueRef<'_>> {
+    match borrowed_string(fields_data) {
+        Some(value) => Some(crate::index::StoredValueRef::String(value)),
+        None => borrowed_bytes(fields_data).map(crate::index::StoredValueRef::Binary),
+    }
+}
+
+/// [`mirrored_stored_value`], with the value lent rather than copied.
+fn mirrored_stored_value_ref(
+    stored: bool,
+    fields_data: &AtomicRefCell<FieldData>,
+) -> Option<crate::index::StoredValueRef<'_>> {
+    if !stored {
+        return None;
+    }
+    Some(borrowed_stored_value(fields_data).unwrap_or_else(|| {
+        unreachable!(
+            "INVARIANT: a stored StringField, TextField or KeywordField holds a String or BytesRef"
+        )
+    }))
+}
+
 // -----------------------------------------------------------------------------
 // StringField
 // -----------------------------------------------------------------------------
@@ -2493,8 +2586,12 @@ impl StringField {
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// indexed bytes and the stored value follow the new string.
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
-        let value = set_string_fields_data(&self.fields_data, value.into())?;
-        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        let bytes = set_string_fields_data(
+            &self.fields_data,
+            value.into(),
+            BytesRef::from_char_sequence,
+        )?;
+        *self.binary_value.borrow_mut() = Some(bytes);
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -2564,6 +2661,21 @@ impl IndexableField for StringField {
     /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
         Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
+    }
+
+    /// `stringValue()` returns the field's own `String`: lent here, not
+    /// copied.
+    fn string_value_ref(&self) -> Option<crate::index::StringValueRef<'_>> {
+        borrowed_string(&self.fields_data).map(crate::index::StringValueRef::Borrowed)
+    }
+
+    /// The stored value mirrors `fieldsData` (see `stored_value`), lent here
+    /// rather than copied.
+    fn stored_value_ref(&self) -> Result<Option<crate::index::StoredValueRef<'_>>> {
+        Ok(mirrored_stored_value_ref(
             self.field_type.stored(),
             &self.fields_data,
         ))
@@ -2676,7 +2788,7 @@ impl TextField {
     /// checks the value type and rejects `None` (Java's `null`), then the
     /// stored value follows the new string.
     pub fn set_string_value(&self, value: impl Into<Option<String>>) -> Result<()> {
-        set_string_fields_data(&self.fields_data, value.into())?;
+        set_string_fields_data(&self.fields_data, value.into(), |_| ())?;
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -2745,6 +2857,21 @@ impl IndexableField for TextField {
     /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
         Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
+    }
+
+    /// `stringValue()` returns the field's own `String`: lent here, not
+    /// copied.
+    fn string_value_ref(&self) -> Option<crate::index::StringValueRef<'_>> {
+        borrowed_string(&self.fields_data).map(crate::index::StringValueRef::Borrowed)
+    }
+
+    /// The stored value mirrors `fieldsData` (see `stored_value`), lent here
+    /// rather than copied.
+    fn stored_value_ref(&self) -> Result<Option<crate::index::StoredValueRef<'_>>> {
+        Ok(mirrored_stored_value_ref(
             self.field_type.stored(),
             &self.fields_data,
         ))
@@ -2997,6 +3124,18 @@ impl IndexableField for StoredField {
         self.0.stored_value()
     }
 
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        self.0.binary_value_ref()
+    }
+
+    fn string_value_ref(&self) -> Option<crate::index::StringValueRef<'_>> {
+        self.0.string_value_ref()
+    }
+
+    fn stored_value_ref(&self) -> Result<Option<crate::index::StoredValueRef<'_>>> {
+        self.0.stored_value_ref()
+    }
+
     fn invertable_type(&self) -> Option<InvertableType> {
         self.0.invertable_type()
     }
@@ -3241,8 +3380,9 @@ impl KeywordField {
     ///
     /// `IllegalArgumentException` when the field does not hold a string.
     pub fn set_string_value(&self, value: String) -> Result<()> {
-        let value = set_string_fields_data(&self.fields_data, Some(value))?;
-        *self.binary_value.borrow_mut() = Some(BytesRef::from_char_sequence(&value));
+        let bytes =
+            set_string_fields_data(&self.fields_data, Some(value), BytesRef::from_char_sequence)?;
+        *self.binary_value.borrow_mut() = Some(bytes);
         // `storedValue.setStringValue(value)`: the stored value mirrors
         // `fieldsData` (see `stored_value`), so it already follows.
         Ok(())
@@ -3413,6 +3553,24 @@ impl IndexableField for KeywordField {
     /// `fieldsData` here instead of being kept as a second copy of the value.
     fn stored_value(&self) -> Result<Option<StoredValue>> {
         Ok(mirrored_stored_value(
+            self.field_type.stored(),
+            &self.fields_data,
+        ))
+    }
+
+    /// `stringValue()` returns the field's own `String`: lent here, not
+    /// copied; a number is still rendered by `string_value`.
+    fn string_value_ref(&self) -> Option<crate::index::StringValueRef<'_>> {
+        match borrowed_string(&self.fields_data) {
+            Some(value) => Some(crate::index::StringValueRef::Borrowed(value)),
+            None => IndexableField::string_value(self).map(crate::index::StringValueRef::Owned),
+        }
+    }
+
+    /// The stored value mirrors `fieldsData` (see `stored_value`), lent here
+    /// rather than copied.
+    fn stored_value_ref(&self) -> Result<Option<crate::index::StoredValueRef<'_>>> {
+        Ok(mirrored_stored_value_ref(
             self.field_type.stored(),
             &self.fields_data,
         ))
@@ -3777,6 +3935,12 @@ impl IndexableField for IntPoint {
         }
     }
 
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
+    }
+
     fn string_value(&self) -> Option<String> {
         None
     }
@@ -4059,6 +4223,12 @@ impl IndexableField for LongPoint {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
+    }
+
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
     }
 
     fn string_value(&self) -> Option<String> {
@@ -4390,6 +4560,12 @@ impl IndexableField for FloatPoint {
         }
     }
 
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
+    }
+
     fn string_value(&self) -> Option<String> {
         None
     }
@@ -4685,6 +4861,12 @@ impl IndexableField for DoublePoint {
         }
     }
 
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
+    }
+
     fn string_value(&self) -> Option<String> {
         None
     }
@@ -4930,6 +5112,12 @@ impl IndexableField for BinaryPoint {
             FieldData::Bytes(v) => Some(v.clone()),
             _ => None,
         }
+    }
+
+    /// `binaryValue()` returns the field's own `BytesRef`: lent here, not
+    /// copied.
+    fn binary_value_ref(&self) -> Option<crate::index::BinaryValueRef<'_>> {
+        borrowed_bytes(&self.fields_data).map(crate::index::BinaryValueRef::Borrowed)
     }
 
     fn string_value(&self) -> Option<String> {
@@ -7105,13 +7293,18 @@ impl DateTools {
     /// past 9999 gives a longer string; the other fields are zero-padded to
     /// their letter count.
     pub fn time_to_string(time: i64, resolution: Resolution) -> String {
+        use std::fmt::Write as _;
         let cal = GregorianFields::from_millis(Self::round(time, resolution));
         let year_of_era = if cal.year <= 0 {
             1 - cal.year
         } else {
             cal.year
         };
-        let mut out = format!("{year_of_era:04}");
+        // PERF: one buffer, sized for the longest pattern
+        // (`yyyyMMddHHmmssSSS`), written in place rather than through a
+        // temporary `String` per field.
+        let mut out = String::with_capacity(17);
+        let _ = write!(out, "{year_of_era:04}");
         let fields = [
             (i64::from(cal.month) + 1, 2),
             (i64::from(cal.day_of_month), 2),
@@ -7130,7 +7323,7 @@ impl DateTools {
             Resolution::MILLISECOND => 6,
         };
         for &(value, width) in fields.iter().take(count) {
-            out.push_str(&format!("{value:0width$}"));
+            let _ = write!(out, "{value:0width$}");
         }
         out
     }
@@ -8485,13 +8678,18 @@ fn cannot_change_value_type(from: &str, to: &str) -> LuceneError {
 
 /// `Field.setStringValue(String)` (`Field.java:304-313`) on a field's value
 /// cell: the value-type check, then the null check, then the assignment.
-/// Returns the new string, for the subclass overrides that copy it into their
-/// own state (`StringField.java:100-106`, `TextField.java:94-99`,
-/// `KeywordField.java:117-123`).
-fn set_string_fields_data(
+/// Returns what `derive` makes of the new string, for the subclass overrides
+/// that derive their own state from it (`StringField.java:100-106`,
+/// `TextField.java:94-99`, `KeywordField.java:117-123`).
+///
+/// PERF: Java's `fieldsData` and the override then share one `String`; here
+/// `derive` reads the string before it is stored, instead of the string being
+/// copied so that both could hold it.
+fn set_string_fields_data<R>(
     fields_data: &AtomicRefCell<FieldData>,
     value: Option<String>,
-) -> Result<String> {
+    derive: impl FnOnce(&str) -> R,
+) -> Result<R> {
     let mut data = fields_data.borrow_mut();
     if !matches!(*data, FieldData::String(_)) {
         return Err(cannot_change_value_type(
@@ -8504,8 +8702,9 @@ fn set_string_fields_data(
             "value must not be null".to_string(),
         ));
     };
-    *data = FieldData::String(value.clone());
-    Ok(value)
+    let derived = derive(&value);
+    *data = FieldData::String(value);
+    Ok(derived)
 }
 
 /// `Field.setBytesValue(BytesRef)` (`Field.java:335-346`) on a field's value
@@ -10277,10 +10476,11 @@ mod shared_mutable_field_tests {
         ft.set_stored(true).unwrap();
         let number = Field::new_with_number("n", NumericValue::Int(1), ft.clone()).unwrap();
         let message = |r: Result<()>| match r {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message: m, .. },
-                ..
-            }) => m,
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message: m, .. } = &__lerr.kind =>
+            {
+                m.clone()
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };
         assert_eq!(

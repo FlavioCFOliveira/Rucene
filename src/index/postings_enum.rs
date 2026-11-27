@@ -113,6 +113,22 @@ pub trait PostingsEnum: DocIdSetIterator + std::fmt::Display {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         None
     }
+
+    /// Hands the boxed enum over as `Box<dyn Any>`, so that a caller that
+    /// already identified its concrete type (through
+    /// [`DocIdSetIterator::disi_as_any`]) can own it as that type.
+    ///
+    /// **This has no counterpart in Lucene 10.5.0.** It is a devirtualisation
+    /// hook (rmp #679–#682): Java's JIT inlines the monomorphic postings calls
+    /// of the phrase matchers, which this port can only do by calling the
+    /// concrete enum statically. The default answers `None` and drops the
+    /// enum, so a caller asks only after `disi_as_any` named the type; only
+    /// the core's own enums the fast paths know override it, with
+    /// `Some(self)`.
+    #[doc(hidden)]
+    fn into_any(self: Box<Self>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
 }
 
 /// The body of `PostingsEnum.nextPostings(int, DocAndFloatFeatureBuffer)`

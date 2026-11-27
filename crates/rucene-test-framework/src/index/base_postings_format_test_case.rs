@@ -1109,10 +1109,9 @@ pub trait BasePostingsFormatTestCase: BaseIndexFileFormatTestCase {
             if supports_ords {
                 let ord = match terms_enum.ord() {
                     Ok(ord) => ord,
-                    Err(LuceneError {
-                        kind: LuceneErrorKind::UnsupportedOperation { .. },
-                        ..
-                    }) => {
+                    Err(ref __lerr)
+                        if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) =>
+                    {
                         supports_ords = false;
                         -1
                     }

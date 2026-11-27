@@ -465,13 +465,9 @@ mod tests {
 
     #[test]
     fn new_character_buffer_rejects_small_size() {
-        assert!(matches!(
-            new_character_buffer(1),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(new_character_buffer(1), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -528,10 +524,9 @@ mod tests {
     #[test]
     fn buffer_errors_carry_javas_messages() {
         match new_character_buffer(1) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "buffersize must be >= 2")
             }
             other => panic!("expected the size error, got {other:?}"),
@@ -539,10 +534,9 @@ mod tests {
         let mut buffer = new_character_buffer(4).unwrap();
         let mut reader = crate::analysis::StringCharReader::new("x");
         match fill(&mut buffer, &mut reader, 5) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
                 assert_eq!(message, "numChars must be >= 2 and <= the buffer size")
             }
             other => panic!("expected the count error, got {other:?}"),

@@ -2572,13 +2572,9 @@ pub(crate) mod tests {
         let mut output = dir.create_output("data", &context).unwrap();
         let state = MergeState::from_fields_producers(Vec::new(), Vec::new());
         let empty = MergedFloat32VectorValues::new(Vec::new(), &state).unwrap();
-        assert!(matches!(
-            Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &empty),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(Lucene99FlatVectorsWriter::write_vector_data(output.as_mut(), &empty), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
         assert_eq!(output.file_pointer(), 0);
 
         // Positive control: a view with one two-dimension vector is written.

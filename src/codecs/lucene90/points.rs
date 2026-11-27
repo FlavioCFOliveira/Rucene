@@ -1849,13 +1849,7 @@ mod tests {
                 .check_integrity()
                 .expect_err("a corrupted file fails its checksum");
             assert!(
-                matches!(
-                    err,
-                    LuceneError {
-                        kind: LuceneErrorKind::CorruptIndex { .. },
-                        ..
-                    }
-                ),
+                matches!(&err.kind, LuceneErrorKind::CorruptIndex { .. }),
                 "{ext}: {err:?}"
             );
             assert!(err.to_string().contains("checksum failed"), "{ext}: {err}");

@@ -1914,7 +1914,7 @@ mod xy_point_field_query_tests {
     fn a_none_field_is_javas_null_field() {
         use crate::geo::geometry::Polygon;
         fn is_null_field(r: Result<Arc<dyn Query>>) -> bool {
-            matches!(r, Err(LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }) if m == "field must not be null")
+            matches!(r, Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "field must not be null"))
         }
         let polygon = Polygon::new(
             vec![18.0, 18.0, 19.0, 19.0, 18.0],
@@ -1988,13 +1988,9 @@ mod xy_point_field_query_tests {
             XYPointField::new_box_query(Some("f"), f32::NAN, f32::NAN, f32::NAN, f32::NAN).is_err()
         );
         for radius in [-1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(matches!(
-                XYPointField::new_distance_query(Some("f"), 18.0, 19.0, radius),
-                Err(LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                })
-            ));
+            assert!(
+                matches!(XYPointField::new_distance_query(Some("f"), 18.0, 19.0, radius), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+            );
         }
     }
 }

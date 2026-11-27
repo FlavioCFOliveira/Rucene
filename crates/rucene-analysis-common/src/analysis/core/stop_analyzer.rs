@@ -101,6 +101,26 @@ impl Analyzer for StopAnalyzer {
         "org.apache.lucene.analysis.core.StopAnalyzer"
     }
 
+    /// `createComponents`' `LetterTokenizer`, `LowerCaseFilter` and
+    /// `StopFilter` as owned stages (rmp #679 owned chain).
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        use crate::analysis::util::char_tokenizer::{CharTokenizerAdapter, OwnedCharTokenizer};
+        Some(Ok(rucene::analysis::owned::OwnedStages::new(Box::new(
+            OwnedCharTokenizer::new(CharTokenizerAdapter::new(
+                super::letter_tokenizer::LetterTokenizerLogic,
+            )),
+        ))
+        .with_filter(Box::new(
+            rucene::analysis::lower_case_filter::OwnedLowerCaseFilter,
+        ))
+        .with_filter(Box::new(
+            rucene::analysis::stop_filter::OwnedStopFilter::new(self.base.stopwords().clone()),
+        ))))
+    }
+
     /// Creates `TokenStreamComponents` used to tokenize all the text in the
     /// provided `Reader`: a `LetterTokenizer` filtered with
     /// `LowerCaseFilter` and `StopFilter`.

@@ -408,6 +408,21 @@ pub trait SimScorer {
     fn as_bulk_sim_scorer(&self) -> Box<dyn BulkSimScorer + '_> {
         Box::new(DefaultBulkSimScorer { scorer: self })
     }
+
+    /// Returns a [`BulkSimScorer`] that owns what it reads, for a caller that
+    /// keeps it beside this scorer: Java's `TermScorer` and `MaxScoreCache`
+    /// call `asBulkSimScorer()` once, in their constructors
+    /// (`TermScorer.java:54, 77`, `MaxScoreCache.java:47`), which
+    /// [`as_bulk_sim_scorer`](Self::as_bulk_sim_scorer)'s borrow does not
+    /// allow. It produces the same scores as `as_bulk_sim_scorer`.
+    ///
+    /// `None`, the default, stands for the default bulk scorer, which scores
+    /// each document with [`score`](Self::score); a caller then does exactly
+    /// that.
+    #[doc(hidden)]
+    fn owned_bulk_sim_scorer(&self) -> Option<Box<dyn BulkSimScorer + Send + Sync>> {
+        None
+    }
 }
 
 /// Specialization of [`SimScorer`] for bulk computation of scores.
@@ -415,6 +430,20 @@ pub trait SimScorer {
 /// Equivalent to the nested interface `Similarity.BulkSimScorer`
 /// (`Similarity.java:234-249`).
 pub trait BulkSimScorer {
+    /// [`score`](Self::score) with Java's aliasing: `freqs_and_scores` holds
+    /// the frequencies on entry and the scores on return, as it does for a
+    /// Java caller passing one array as both (`TermScorer.java:166`,
+    /// `MaxScoreCache.java:82`).
+    ///
+    /// The default copies the frequencies first; an implementation that reads
+    /// every frequency before writing the score at its index overrides it to
+    /// work in place.
+    #[doc(hidden)]
+    fn score_in_place(&mut self, size: usize, freqs_and_scores: &mut [f32], norms: &[i64]) {
+        let freqs = freqs_and_scores[..size].to_vec();
+        self.score(size, &freqs, norms, freqs_and_scores);
+    }
+
     /// Computes `size` scores at once: for each `i` in `[0, size)`,
     /// `scores[i]` becomes `score(freqs[i], norms[i])`.
     ///
@@ -634,12 +663,17 @@ impl BM25Similarity {
         let df = term_stats.doc_freq();
         let doc_count = collection_stats.doc_count();
         let idf = self.idf(df, doc_count);
-        Explanation::matched(
+        // PERF: literal descriptions, held without a copy as Java holds them.
+        Explanation::matched_static(
             idf,
             "idf, computed as log(1 + (N - n + 0.5) / (n + 0.5)) from:",
             vec![
-                Explanation::matched(df, "n, number of documents containing term", vec![]),
-                Explanation::matched(doc_count, "N, total number of documents with field", vec![]),
+                Explanation::matched_static(df, "n, number of documents containing term", vec![]),
+                Explanation::matched_static(
+                    doc_count,
+                    "N, total number of documents with field",
+                    vec![],
+                ),
             ],
         )
     }
@@ -662,7 +696,7 @@ impl BM25Similarity {
             idf += f64::from(idf_explain.value().float_value());
             details.push(idf_explain);
         }
-        Explanation::matched(idf as f32, "idf, sum of:", details)
+        Explanation::matched_static(idf as f32, "idf, sum of:", details)
     }
 }
 
@@ -694,13 +728,14 @@ impl Similarity for BM25Similarity {
         };
         let avgdl = self.avg_field_length(collection_stats);
 
+        // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
+        // `float`; `1 - b` is an `int` minus a `float`, hence a `float`
+        // (`BM25Similarity.java:181-184`). PERF: the table is taken once, not
+        // through its lazy initialiser per entry, so the 256 divisions
+        // vectorise; each entry is computed exactly as before.
         let mut cache = [0.0f32; 256];
-        for (i, entry) in cache.iter_mut().enumerate() {
-            // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
-            // `float`; `1 - b` is an `int` minus a `float`, hence a `float`.
-            *entry = 1.0
-                / (self.k1
-                    * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));
+        for (entry, &length) in cache.iter_mut().zip(similarity_base::length_table()) {
+            *entry = 1.0 / (self.k1 * ((1.0 - self.b) + self.b * length / avgdl));
         }
         Box::new(BM25Scorer::new(boost, self.k1, self.b, idf, avgdl, cache))
     }
@@ -723,11 +758,14 @@ impl Similarity for BM25Similarity {
         };
         let avgdl = self.avg_field_length(collection_stats);
 
+        // Java: 1f / (k1 * ((1 - b) + b * LENGTH_TABLE[i] / avgdl)), all in
+        // `float`; `1 - b` is an `int` minus a `float`, hence a `float`
+        // (`BM25Similarity.java:181-184`). PERF: the table is taken once, not
+        // through its lazy initialiser per entry, so the 256 divisions
+        // vectorise; each entry is computed exactly as before.
         let mut cache = [0.0f32; 256];
-        for (i, entry) in cache.iter_mut().enumerate() {
-            *entry = 1.0
-                / (self.k1
-                    * ((1.0 - self.b) + self.b * similarity_base::norm_length(i as i64) / avgdl));
+        for (entry, &length) in cache.iter_mut().zip(similarity_base::length_table()) {
+            *entry = 1.0 / (self.k1 * ((1.0 - self.b) + self.b * length / avgdl));
         }
         Box::new(BM25Scorer::new(boost, self.k1, self.b, idf, avgdl, cache))
     }
@@ -778,7 +816,7 @@ impl BM25Scorer {
     /// monotonicity survives `x -> 1 + x` and `x -> 1 - 1 / x`. The expansion
     /// also runs slightly faster than the equivalent product.
     fn do_score(&self, freq: f32, norm_inverse: f32) -> f32 {
-        self.weight - self.weight / (1.0 + freq * norm_inverse)
+        bm25_do_score(self.weight, freq, norm_inverse)
     }
 
     /// The `tf` sub-explanation of `BM25Scorer.explainTF`
@@ -853,6 +891,73 @@ impl SimScorer for BM25Scorer {
             scorer: self,
             norm_inverses: Vec::new(),
         })
+    }
+
+    /// [`BM25BulkSimScorer`] over a copy of the two fields it reads, the
+    /// weight and the inverse-norm cache, so that it can be kept beside this
+    /// scorer.
+    fn owned_bulk_sim_scorer(&self) -> Option<Box<dyn BulkSimScorer + Send + Sync>> {
+        Some(Box::new(OwnedBM25BulkSimScorer {
+            weight: self.weight,
+            cache: self.cache,
+            norm_inverses: Vec::new(),
+        }))
+    }
+}
+
+/// `weight - weight / (1f + freq * normInverse)`, the body of
+/// `BM25Scorer.doScore` (`BM25Similarity.java:221-232`), shared by the single
+/// and the bulk paths so that both compute bit-identical scores.
+#[inline]
+fn bm25_do_score(weight: f32, freq: f32, norm_inverse: f32) -> f32 {
+    weight - weight / (1.0 + freq * norm_inverse)
+}
+
+/// The bulk scorer of `BM25Scorer.asBulkSimScorer` (`BM25Similarity.java:240-262`)
+/// as [`SimScorer::owned_bulk_sim_scorer`] returns it: the same computation as
+/// [`BM25BulkSimScorer`], over copies of the scorer's weight and cache.
+struct OwnedBM25BulkSimScorer {
+    weight: f32,
+    cache: [f32; 256],
+    norm_inverses: Vec<f32>,
+}
+
+impl OwnedBM25BulkSimScorer {
+    /// Fills `norm_inverses[..size]` from `norms`, growing it as Java's
+    /// `ArrayUtil.oversize(size, Float.BYTES)` does.
+    fn load_norm_inverses(&mut self, size: usize, norms: &[i64]) {
+        if self.norm_inverses.len() < size {
+            self.norm_inverses
+                .resize(ArrayUtil::oversize(size, std::mem::size_of::<f32>()), 0.0);
+        }
+        for (norm_inverse, norm) in self.norm_inverses[..size].iter_mut().zip(&norms[..size]) {
+            *norm_inverse = self.cache[usize::from(*norm as u8)];
+        }
+    }
+}
+
+impl BulkSimScorer for OwnedBM25BulkSimScorer {
+    fn score(&mut self, size: usize, freqs: &[f32], norms: &[i64], scores: &mut [f32]) {
+        self.load_norm_inverses(size, norms);
+        let weight = self.weight;
+        for ((score, freq), norm_inverse) in scores[..size]
+            .iter_mut()
+            .zip(&freqs[..size])
+            .zip(&self.norm_inverses[..size])
+        {
+            *score = bm25_do_score(weight, *freq, *norm_inverse);
+        }
+    }
+
+    fn score_in_place(&mut self, size: usize, freqs_and_scores: &mut [f32], norms: &[i64]) {
+        self.load_norm_inverses(size, norms);
+        let weight = self.weight;
+        for (value, norm_inverse) in freqs_and_scores[..size]
+            .iter_mut()
+            .zip(&self.norm_inverses[..size])
+        {
+            *value = bm25_do_score(weight, *value, *norm_inverse);
+        }
     }
 }
 
@@ -1030,7 +1135,7 @@ mod tests {
         let state = state(IndexOptions::DOCS_AND_FREQS, 2, 5, 0);
         let error = sim.compute_norm(&state).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. } if m.contains("positive")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("positive")),
             "unexpected error: {error:?}"
         );
     }

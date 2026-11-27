@@ -902,10 +902,9 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                     });
                     match added {
                         Ok(()) => {}
-                        Err(LuceneError {
-                            kind: LuceneErrorKind::AlreadyClosed { .. },
-                            ..
-                        }) => {
+                        Err(ref __lerr)
+                            if matches!(&__lerr.kind, LuceneErrorKind::AlreadyClosed { .. }) =>
+                        {
                             // OK: writer was closed by abort; we just reopen now:
                             dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
                             Assert::assert_true(is_deleter_closed(&iw));
@@ -947,10 +946,12 @@ pub trait BaseIndexFileFormatTestCase: Send + Sync + 'static {
                         })();
                         match flushed {
                             Ok(()) => {}
-                            Err(LuceneError {
-                                kind: LuceneErrorKind::AlreadyClosed { .. },
-                                ..
-                            }) => {
+                            Err(ref __lerr)
+                                if matches!(
+                                    &__lerr.kind,
+                                    LuceneErrorKind::AlreadyClosed { .. }
+                                ) =>
+                            {
                                 // OK: writer was closed by abort; we just reopen now:
                                 dir.set_random_io_exception_rate_on_open(0.0); // disable exceptions on openInput until next iteration
                                 Assert::assert_true(is_deleter_closed(&iw));
@@ -1250,14 +1251,10 @@ pub fn assert_array_equals_msg<T: PartialEq + fmt::Display>(
 /// Whether Java's `catch (UnsupportedOperationException e)` catches the error.
 pub fn is_unsupported_operation(e: &LuceneError) -> bool {
     match e {
-        LuceneError {
-            kind: LuceneErrorKind::UnsupportedOperation { .. },
-            ..
-        } => true,
-        LuceneError {
-            kind: LuceneErrorKind::Unchecked { class, .. },
-            ..
-        } => *class == "java.lang.UnsupportedOperationException",
+        __lerr if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) => true,
+        __lerr if let LuceneErrorKind::Unchecked { class, .. } = &__lerr.kind => {
+            *class == "java.lang.UnsupportedOperationException"
+        }
         _ => false,
     }
 }
@@ -1275,17 +1272,10 @@ pub fn is_instance_of_java_class(e: &LuceneError, class: &str) -> bool {
 /// Whether Java's `catch (CorruptIndexException e)` catches the error.
 pub fn is_corrupt_index(e: &LuceneError) -> bool {
     matches!(
-        e,
-        LuceneError {
-            kind: LuceneErrorKind::CorruptIndex { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexFormatTooOld { .. },
-            ..
-        } | LuceneError {
-            kind: LuceneErrorKind::IndexFormatTooNew { .. },
-            ..
-        }
+        &e.kind,
+        LuceneErrorKind::CorruptIndex { .. }
+            | LuceneErrorKind::IndexFormatTooOld { .. }
+            | LuceneErrorKind::IndexFormatTooNew { .. }
     )
 }
 

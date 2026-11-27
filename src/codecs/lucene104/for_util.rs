@@ -812,16 +812,17 @@ mod tests {
                     .expect_err("a width outside MASKS32 must fail")
             };
             match error {
-                LuceneError {
-                    kind:
-                        LuceneErrorKind::Unchecked {
-                            class: "java.lang.ArrayIndexOutOfBoundsException",
-                            message: Some(message),
-                            ..
-                        },
-                    ..
-                } => {
-                    assert_eq!(message, format!("Index {bits} out of bounds for length 32"))
+                ref __lerr
+                    if let LuceneErrorKind::Unchecked {
+                        class: "java.lang.ArrayIndexOutOfBoundsException",
+                        message: Some(message),
+                        ..
+                    } = &__lerr.kind =>
+                {
+                    assert_eq!(
+                        *message,
+                        format!("Index {bits} out of bounds for length 32")
+                    )
                 }
                 other => panic!("unexpected error for {bits} bits: {other:?}"),
             }

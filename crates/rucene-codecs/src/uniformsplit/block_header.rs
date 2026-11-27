@@ -258,13 +258,7 @@ mod tests {
 
     fn message(e: LuceneError) -> String {
         assert!(
-            matches!(
-                &e,
-                LuceneError {
-                    kind: LuceneErrorKind::CorruptIndex { .. },
-                    ..
-                }
-            ),
+            matches!(&e.kind, LuceneErrorKind::CorruptIndex { .. }),
             "{e:?}"
         );
         e.to_string()

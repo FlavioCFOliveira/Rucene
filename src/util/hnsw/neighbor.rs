@@ -898,16 +898,17 @@ mod tests {
     #[test]
     fn neighbor_queue_rejects_a_zero_initial_size() {
         match NeighborQueue::new(0, false) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                format!(
-                    "initialCapacity must be > 0 and < {}; got: 0",
-                    crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    *message,
+                    format!(
+                        "initialCapacity must be > 0 and < {}; got: 0",
+                        crate::util::ArrayUtil::MAX_ARRAY_LENGTH - 1
+                    )
                 )
-            ),
+            }
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         }
     }

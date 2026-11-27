@@ -292,7 +292,7 @@ mod tests {
             .write(dir.as_ref(), &info, &*crate::store::DEFAULT_IO_CONTEXT)
             .unwrap_err();
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m.contains("invalid major version")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m.contains("invalid major version")),
             "{error:?}"
         );
         assert_eq!(log.close_count("_0.si"), 1);

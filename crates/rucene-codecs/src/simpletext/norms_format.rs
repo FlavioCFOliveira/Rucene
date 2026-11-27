@@ -247,7 +247,7 @@ mod tests {
             norms_producer: &NoNorms,
         };
         let field = FieldInfo::new("f", 0);
-        let message = |error: LuceneError| match error.kind {
+        let message = |error: LuceneError| match error.into_kind() {
             rucene::error::LuceneErrorKind::UnsupportedOperation { message, .. } => message,
             other => panic!("{other:?}"),
         };

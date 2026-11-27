@@ -554,8 +554,7 @@ mod tests {
 
         let err = a.compare_to(b.as_ref()).unwrap_err();
         assert!(
-            matches!(err, LuceneError { kind: LuceneErrorKind::UnsupportedOperation { message: ref msg, .. }, .. }
-                if msg.contains("different Directory instances")),
+            matches!(&err.kind, LuceneErrorKind::UnsupportedOperation { message: ref msg, .. } if msg.contains("different Directory instances")),
             "unexpected error: {err}"
         );
     }
@@ -775,16 +774,7 @@ mod tests {
         let err = execute(&[Some(&b as &dyn TwoPhaseCommit)]).unwrap_err();
 
         let lucene: LuceneError = err.into();
-        assert!(
-            matches!(
-                lucene,
-                LuceneError {
-                    kind: LuceneErrorKind::Io(_),
-                    ..
-                }
-            ),
-            "{lucene}"
-        );
+        assert!(matches!(&lucene.kind, LuceneErrorKind::Io(_)), "{lucene}");
         assert!(lucene.to_string().contains("prepareCommit() failed on"));
     }
 }

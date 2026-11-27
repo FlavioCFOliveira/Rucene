@@ -2071,7 +2071,7 @@ impl IndexSearcher {
         score_mode: ScoreMode,
         boost: f32,
     ) -> Result<Arc<dyn Weight>> {
-        let mut weight = query.create_weight(self, score_mode, boost)?;
+        let mut weight = query.create_weight_shared(self, score_mode, boost)?;
         if !score_mode.needs_scores() {
             if let (Some(query_cache), Some(policy)) = (
                 self.query_cache.as_ref(),

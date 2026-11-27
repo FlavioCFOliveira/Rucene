@@ -772,6 +772,18 @@ pub struct TermsHashPerField {
     /// and reads back; recomputing the sort on every read would sort the whole
     /// table again per field per flush.
     sorted_term_ids: Option<Vec<i32>>,
+    /// The term whose stream addresses the next two fields locate, or `-1`.
+    ///
+    /// Equivalent to Java's `termStreamAddressBuffer` and
+    /// `streamAddressOffset`, which `initStreamSlices` and
+    /// `positionStreamSlice` set for the term being added
+    /// (`TermsHashPerField.java:150-218`) and `writeByte` reads
+    /// (`TermsHashPerField.java:220-234`): the block of the `IntBlockPool`
+    /// that holds the term's stream addresses, and the offset of the first
+    /// one in it.
+    stream_term_id: i32,
+    stream_address_block: usize,
+    stream_address_offset: usize,
 }
 
 impl TermsHashPerField {
@@ -824,6 +836,9 @@ impl TermsHashPerField {
             bytes_used,
             last_doc_id: 0,
             sorted_term_ids: None,
+            stream_term_id: -1,
+            stream_address_block: 0,
+            stream_address_offset: 0,
         };
         field.init_postings();
         field
@@ -883,6 +898,7 @@ impl TermsHashPerField {
     /// Equivalent to `TermsHashPerField.PostingsBytesStartArray.clear()`
     /// (`TermsHashPerField.java:311-318`).
     fn clear_postings(&mut self) {
+        self.stream_term_id = -1;
         if !self.postings.is_empty() {
             self.bytes_used.fetch_sub(
                 self.postings.len() as i64 * self.bytes_per_posting,
@@ -1158,15 +1174,25 @@ impl TermsHashPerField {
     ///
     /// Equivalent to `org.apache.lucene.index.TermsHashPerField#positionStreamSlice`.
     ///
-    /// Lucene also caches `termStreamAddressBuffer` and `streamAddressOffset`
-    /// from the `IntBlockPool` here, and dispatches to `addTerm`. This port's
-    /// write methods take the term id and find its addresses through
-    /// [`FreqProxPosting::address_offset`] instead, and the `newTerm`/`addTerm`
-    /// dispatch is the caller's, on the returned [`TermSlot`].
-    fn position_stream_slice(&self, term_id: i32) -> i32 {
+    /// As Lucene, it locates the term's stream addresses for the writes that
+    /// follow (`termStreamAddressBuffer`, `streamAddressOffset`); the
+    /// `newTerm`/`addTerm` dispatch is the caller's, on the returned
+    /// [`TermSlot`].
+    fn position_stream_slice(&mut self, term_id: i32) -> i32 {
         let term_id = -term_id - 1;
         debug_assert!((term_id as usize) < self.postings.len());
+        self.locate_streams(term_id);
         term_id
+    }
+
+    /// `termStreamAddressBuffer = intPool.buffers[intStart >> INT_BLOCK_SHIFT];
+    /// streamAddressOffset = intStart & INT_BLOCK_MASK` for `term_id`.
+    #[inline]
+    fn locate_streams(&mut self, term_id: i32) {
+        let address_offset = self.postings[term_id as usize].address_offset as usize;
+        self.stream_term_id = term_id;
+        self.stream_address_block = address_offset >> INT_BLOCK_SHIFT;
+        self.stream_address_offset = address_offset & INT_BLOCK_MASK;
     }
 
     /// Reserves `streamCount` addresses and one slice per stream for a freshly
@@ -1208,6 +1234,10 @@ impl TermsHashPerField {
         }
         slot.byte_start = int_pool.buffer(block)[stream_address_offset];
         self.postings[term_id as usize] = slot;
+        // `termStreamAddressBuffer = buffer; streamAddressOffset = ...`.
+        self.stream_term_id = term_id;
+        self.stream_address_block = block;
+        self.stream_address_offset = stream_address_offset;
         Ok(())
     }
 
@@ -1256,26 +1286,29 @@ impl TermsHashPerField {
         value: u8,
     ) -> Result<()> {
         debug_assert!(stream < self.stream_count);
-        let address_offset = self.postings[term_id as usize].address_offset;
-        let address = stream_address(int_pool, address_offset, stream) as usize;
+        // PERF: the term's stream addresses are located once per added token,
+        // as Java's `termStreamAddressBuffer`/`streamAddressOffset`
+        // (`TermsHashPerField.java:220-234`); the address is read and bumped
+        // in place, and the byte block is looked up once.
+        if term_id != self.stream_term_id {
+            self.locate_streams(term_id);
+        }
+        let slot = &mut int_pool.buffer_mut(self.stream_address_block)
+            [self.stream_address_offset + stream];
+        let address = *slot as usize;
         let block = address >> BYTE_BLOCK_SHIFT;
         let offset = address & BYTE_BLOCK_MASK;
-
-        if pool.buffer(block)[offset] != 0 {
-            // End of slice: chain a new one and restart there.
-            let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
-            let new_block = pool.buffer_upto() as usize;
-            pool.buffer_mut(new_block)[new_offset] = value;
-            set_stream_address(
-                int_pool,
-                address_offset,
-                stream,
-                new_offset as i32 + pool.byte_offset() + 1,
-            );
-        } else {
-            pool.buffer_mut(block)[offset] = value;
-            set_stream_address(int_pool, address_offset, stream, address as i32 + 1);
+        let bytes = pool.buffer_mut(block);
+        if bytes[offset] == 0 {
+            bytes[offset] = value;
+            *slot += 1;
+            return Ok(());
         }
+        // End of slice: chain a new one and restart there.
+        let new_offset = ByteSlicePool::alloc_slice(pool, block, offset)?;
+        let new_block = pool.buffer_upto() as usize;
+        pool.buffer_mut(new_block)[new_offset] = value;
+        *slot = new_offset as i32 + pool.byte_offset() + 1;
         Ok(())
     }
 
@@ -1559,10 +1592,9 @@ impl FreqProxTermsWriterPerField {
             self.new_term(pool, int_pool, field_state, slot.term_id, doc_id, token)?;
         } else {
             match self.add_term(pool, int_pool, field_state, slot.term_id, doc_id, token) {
-                Err(TermsHashAddError::DuplicateTerm(LuceneError {
-                    kind: LuceneErrorKind::IllegalState { message, cause },
-                    ..
-                })) => {
+                Err(TermsHashAddError::DuplicateTerm(ref __lerr))
+                    if let LuceneErrorKind::IllegalState { message, cause } = &__lerr.kind =>
+                {
                     // `BytesRef.utf8ToString()` decodes with
                     // `UnicodeUtil.UTF8toUTF16`, which never rejects a byte.
                     let mut utf16 = vec![0u16; term_bytes.len()];
@@ -1578,7 +1610,7 @@ impl FreqProxTermsWriterPerField {
                                 "{message} '{}'",
                                 String::from_utf16_lossy(&utf16[..length])
                             ),
-                            cause,
+                            cause: cause.clone(),
                         },
                     )));
                 }
@@ -4333,13 +4365,7 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -4354,13 +4380,7 @@ mod tests {
             .add_doc(1, &[Token::new("alpha", 1).with_term_freq(4)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalState { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { .. }),
             "{error:?}"
         );
     }
@@ -4400,7 +4420,7 @@ mod tests {
             )
             .expect_err("the frequency overflows");
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::Arithmetic(message), .. } if message == "integer overflow"),
+            matches!(&error.kind, LuceneErrorKind::Arithmetic(message) if message == "integer overflow"),
             "{error:?}"
         );
     }
@@ -4420,11 +4440,7 @@ mod tests {
             .add_doc(0, &[Token::new("alpha", 1), Token::new("alpha", 1)])
             .expect_err("must be rejected");
         assert!(
-            matches!(
-                error,
-                LuceneError { kind: LuceneErrorKind::IllegalState { ref message, cause: None }, .. }
-                    if message == "field 'body' has duplicate term 'alpha'"
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { ref message, cause: None } if message == "field 'body' has duplicate term 'alpha'"),
             "{error:?}"
         );
     }
@@ -4445,13 +4461,7 @@ mod tests {
             .intern(&mut pool, &mut ints, &huge, 0)
             .expect_err("too long");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::MaxBytesLengthExceeded(_),
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::MaxBytesLengthExceeded(_)),
             "{error:?}"
         );
         assert_eq!(field.num_terms(), 0);
@@ -4530,27 +4540,15 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.doc_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            enumerator.total_term_freq(),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
-        assert!(matches!(
-            enumerator.impacts(0),
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.doc_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(enumerator.total_term_freq(), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
+        assert!(
+            matches!(enumerator.impacts(0), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }))
+        );
     }
 
     fn drain_positions(postings: &mut dyn PostingsEnum) -> Vec<(i32, Vec<i32>)> {
@@ -4740,13 +4738,9 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.postings(None, POSTINGS_ENUM_POSITIONS),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.postings(None, POSTINGS_ENUM_POSITIONS), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     #[test]
@@ -4759,13 +4753,9 @@ mod tests {
         let terms = fields.terms("body").expect("terms").expect("present");
         let mut enumerator = terms.iterator().expect("iterator");
         enumerator.next().expect("first term");
-        assert!(matches!(
-            enumerator.postings(None, POSTINGS_ENUM_OFFSETS),
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { .. },
-                ..
-            })
-        ));
+        assert!(
+            matches!(enumerator.postings(None, POSTINGS_ENUM_OFFSETS), Err(ref __lerr) if matches!(&__lerr.kind, LuceneErrorKind::IllegalArgument { .. }))
+        );
     }
 
     /// `FreqProxTermsEnum.postings` refuses `FREQS` on a field that did not
@@ -4786,7 +4776,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(&error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. } if m == "did not index freq"),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "did not index freq"),
             "{error:?}"
         );
         assert!(enumerator
@@ -5200,13 +5190,7 @@ mod tests {
         let mut input = PooledSliceReader::new(reader, &pool);
         let error = input.skip_bytes(-1).expect_err("negative skip");
         assert!(
-            matches!(
-                error,
-                LuceneError {
-                    kind: LuceneErrorKind::IllegalArgument { .. },
-                    ..
-                }
-            ),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { .. }),
             "{error:?}"
         );
         input.skip_bytes(1).expect("one byte to skip");

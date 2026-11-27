@@ -1,0 +1,10 @@
+# Build for x86-64-v3 (AVX, AVX2, BMI1, BMI2, FMA, F16C, LZCNT, MOVBE, plus
+# the x86-64-v2 set: SSE4.2, POPCNT, SSSE3, CX16). `count_ones` compiles to
+# `popcnt`, and the auto-vectorised scoring and bit-set kernels use 256-bit
+# AVX2 lanes, as Lucene's JIT does on the same hardware. FMA contraction is not
+# enabled by this flag: Rust never fuses `a * b + c` on its own, so scores stay
+# bit-identical. User decisions: x86-64-v2, 2026-11-26 (rmp #680/#681,
+# proposal P3); x86-64-v3, 2026-11-27 (rmp #680/#681).
+# The crate therefore requires an x86-64 CPU with AVX2, FMA and BMI2.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

@@ -3,11 +3,12 @@
 
 #![deny(unsafe_code)]
 
-use std::any::Any;
+use std::any::{Any, TypeId};
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::search::comparators::int_comparator::{IntComparator, IntLeafComparator};
 use crate::util::atomic_ref_cell::{AtomicRefCell, AtomicRefMut};
 
 use crate::error::Result;
@@ -511,6 +512,22 @@ impl<C: SlotComparator> SharedFieldComparator<C> {
     }
 }
 
+impl SharedFieldComparator<IntComparator> {
+    /// `getLeafComparator(context)` of an int comparator, as its concrete
+    /// leaf class, for a crate-internal caller that dispatches to it
+    /// statically (see `TopFieldCollector`'s leaf collector).
+    pub(crate) fn int_leaf_comparator(
+        &self,
+        context: &LeafReaderContext,
+    ) -> Result<IntLeafComparator> {
+        let leaf = lock_slots(&self.shared).new_leaf(context)?;
+        Ok(IntLeafComparator::new(SharedLeafComparator {
+            shared: Arc::clone(&self.shared),
+            leaf,
+        }))
+    }
+}
+
 impl<C: SlotComparator> Debug for SharedFieldComparator<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         lock_slots(&self.shared).fmt(f)
@@ -545,10 +562,21 @@ impl<C: SlotComparator> FieldComparator for SharedFieldComparator<C> {
         context: &LeafReaderContext,
     ) -> Result<Box<dyn LeafFieldComparator>> {
         let leaf = lock_slots(&self.shared).new_leaf(context)?;
-        Ok(Box::new(SharedLeafComparator {
+        let leaf = SharedLeafComparator {
             shared: Arc::clone(&self.shared),
             leaf,
-        }))
+        };
+        // PERF: the int comparator gets the leaf class of its own that Lucene
+        // has (`IntComparator.IntLeafComparator`), which keeps `bottom` in
+        // the leaf so that `compareBottom` borrows no shared state (rmp #680).
+        if TypeId::of::<C>() == TypeId::of::<IntComparator>() {
+            let leaf: Box<dyn Any> = Box::new(leaf);
+            let leaf = leaf
+                .downcast::<SharedLeafComparator<IntComparator>>()
+                .expect("INVARIANT: C is IntComparator");
+            return Ok(Box::new(IntLeafComparator::new(*leaf)));
+        }
+        Ok(Box::new(leaf))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -580,6 +608,12 @@ impl<C: SlotComparator> SharedLeafComparator<C> {
     /// concrete leaf comparator class.
     pub fn leaf(&self) -> &C::Leaf {
         &self.leaf
+    }
+
+    /// The outer comparator's shared state and the leaf's own fields, for a
+    /// crate-internal leaf comparator built on this one.
+    pub(crate) fn parts_mut(&mut self) -> (&AtomicRefCell<C>, &mut C::Leaf) {
+        (&self.shared, &mut self.leaf)
     }
 }
 

@@ -471,8 +471,7 @@ mod tests {
         writer.add_value(4, 1).unwrap();
         let error = writer.add_value(4, 2).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: ref m, .. }, .. }
-                if m.contains("appears more than once") && m.contains("body")),
+            matches!(&error.kind, LuceneErrorKind::IllegalArgument { message: ref m, .. } if m.contains("appears more than once") && m.contains("body")),
             "unexpected error: {error:?}"
         );
         // A doc id that goes backwards is the same failure.
@@ -739,7 +738,7 @@ mod tests {
         writer.flush(&mut consumer, None).unwrap();
         let error = writer.flush(&mut consumer, None).unwrap_err();
         assert!(
-            matches!(error, LuceneError { kind: LuceneErrorKind::IllegalState { message: ref m, .. }, .. } if m.contains("already been flushed")),
+            matches!(&error.kind, LuceneErrorKind::IllegalState { message: ref m, .. } if m.contains("already been flushed")),
             "unexpected error: {error:?}"
         );
         assert_eq!(consumer.fields.len(), 1);

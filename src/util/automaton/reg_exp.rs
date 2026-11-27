@@ -1644,17 +1644,15 @@ mod tests {
         }
         let regexp = RegExp::with_flags("<foo>", RegExp::ALL).unwrap();
         match regexp.to_automaton_with(None, Some(&Failing)) {
-            Err(LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            }) => {
-                assert_eq!(message, cause.to_string());
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
+                assert_eq!(*message, cause.to_string());
                 assert!(
-                    matches!(cause.as_ref(), LuceneError { kind: LuceneErrorKind::Io(error), .. } if error.to_string() == "boom foo")
+                    matches!(&cause.as_ref().kind, LuceneErrorKind::Io(error) if error.to_string() == "boom foo")
                 );
             }
             other => panic!("expected an IllegalArgumentException with a cause, got {other:?}"),
@@ -1681,14 +1679,12 @@ mod tests {
                 Err(error) => error,
             };
             match &error {
-                LuceneError {
-                    kind:
-                        LuceneErrorKind::IllegalArgument {
-                            message,
-                            cause: Some(cause),
-                        },
-                    ..
-                } => {
+                __lerr
+                    if let LuceneErrorKind::IllegalArgument {
+                        message,
+                        cause: Some(cause),
+                    } = &__lerr.kind =>
+                {
                     assert_eq!(
                         message,
                         &format!("interval syntax error at position {position}")
@@ -1696,7 +1692,7 @@ mod tests {
                     // The cause is the `NumberFormatException` itself.
                     let expected_message = (!cause_message.is_empty()).then_some(cause_message);
                     assert!(
-                        matches!(&**cause, LuceneError { kind: LuceneErrorKind::Unchecked { class: "java.lang.NumberFormatException", message: m, .. }, .. } if m.as_deref() == expected_message),
+                        matches!(&cause.kind, LuceneErrorKind::Unchecked { class: "java.lang.NumberFormatException", message: m, .. } if m.as_deref() == expected_message),
                         "{pattern}: {cause:?}"
                     );
                 }

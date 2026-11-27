@@ -166,6 +166,12 @@ impl CharArraySet {
         self.map.contains_key_chars(text, off, len)
     }
 
+    /// [`contains_chars`](Self::contains_chars) for a term held as `char`s,
+    /// or `None` when a `char` lies outside the Basic Multilingual Plane.
+    pub(crate) fn contains_bmp_chars(&self, text: &[char]) -> Option<bool> {
+        self.map.contains_key_bmp_chars(text)
+    }
+
     /// Returns the empty, unmodifiable set.
     ///
     /// Equivalent to `CharArraySet.EMPTY_SET` (`CharArraySet.java:39`), a set

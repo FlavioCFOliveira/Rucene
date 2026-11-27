@@ -128,6 +128,34 @@ impl Analyzer for EnglishAnalyzer {
         "org.apache.lucene.analysis.en.EnglishAnalyzer"
     }
 
+    /// `createComponents`' `StandardTokenizer`, `EnglishPossessiveFilter`,
+    /// `LowerCaseFilter`, `StopFilter` and `PorterStemFilter` as owned stages
+    /// (rmp #679 owned chain); `None` with a stem-exclusion set, whose
+    /// `SetKeywordMarkerFilter` has no owned stage.
+    fn owned_stages(
+        &self,
+        _field_name: Option<&str>,
+    ) -> Option<Result<rucene::analysis::owned::OwnedStages>> {
+        if !self.stem_exclusion_set.is_empty() {
+            return None;
+        }
+        Some(Ok(rucene::analysis::owned::OwnedStages::new(Box::new(
+            rucene::analysis::standard::OwnedStandardTokenizer::new(),
+        ))
+        .with_filter(Box::new(
+            super::english_possessive_filter::OwnedEnglishPossessiveFilter,
+        ))
+        .with_filter(Box::new(
+            rucene::analysis::lower_case_filter::OwnedLowerCaseFilter,
+        ))
+        .with_filter(Box::new(
+            rucene::analysis::stop_filter::OwnedStopFilter::new(self.base.stopwords().clone()),
+        ))
+        .with_filter(Box::new(
+            super::porter_stem_filter::OwnedPorterStemFilter::default(),
+        ))))
+    }
+
     /// Creates a `TokenStreamComponents` which tokenizes all the text in the
     /// provided `Reader`: a `StandardTokenizer` filtered with
     /// `EnglishPossessiveFilter`, `LowerCaseFilter`, `StopFilter`,
@@ -171,5 +199,74 @@ impl Analyzer for EnglishAnalyzer {
             new_lower_case_filter(input)
                 .expect("INVARIANT: the normalization input holds the CharTermAttribute"),
         )
+    }
+}
+
+#[cfg(test)]
+mod owned_chain_tests {
+    use rucene::analysis::owned::owned_and_shared_tokens;
+    use rucene::analysis::Analyzer;
+
+    use super::EnglishAnalyzer;
+    use crate::analysis::core::simple_analyzer::SimpleAnalyzer;
+    use crate::analysis::core::stop_analyzer::StopAnalyzer;
+    use crate::analysis::core::whitespace_analyzer::WhitespaceAnalyzer;
+
+    /// rmp #679 owned chain: the owned stages of WhitespaceAnalyzer (default
+    /// and a 5-unit maximum, which splits long tokens), SimpleAnalyzer,
+    /// StopAnalyzer and EnglishAnalyzer produce, value after value, exactly
+    /// the tokens (term, position increment and length, offsets, type, term
+    /// frequency, keyword flag) and the end state of their shared streams.
+    #[test]
+    fn owned_stages_of_the_core_analyzers_match_their_shared_streams() {
+        let texts = [
+            "The Quick brown FOX, jumps over the lazy dog's back 1234 x.y.z 3.14!",
+            "",
+            "   ",
+            "\t tabs\tand\nnewlines\u{000B}vt\u{001C}fs\u{00A0}nbsp\u{2007}fig\u{3000}ideo ",
+            "a an and are as at be but by for if in into is it no not of on or such",
+            "Running runners ran; the cats' toys and John's books, ponies' meadows.",
+            "supercalifragilisticexpialidocious antidisestablishmentarianism ok",
+            "\u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} caf\u{e9} na\u{ef}ve \u{1F600} emoji \u{10400}x",
+        ];
+        let analyzers: Vec<Box<dyn Analyzer>> = vec![
+            Box::new(WhitespaceAnalyzer::new()),
+            Box::new(WhitespaceAnalyzer::with_max_token_length(5)),
+            Box::new(SimpleAnalyzer::new()),
+            Box::new(StopAnalyzer::new(
+                EnglishAnalyzer::get_default_stop_set().clone(),
+            )),
+            Box::new(EnglishAnalyzer::new()),
+        ];
+        for analyzer in &analyzers {
+            for text in texts {
+                for _value in 0..2 {
+                    let (shared, owned) = owned_and_shared_tokens(analyzer.as_ref(), "f", text)
+                        .unwrap()
+                        .unwrap_or_else(|| {
+                            panic!("{} describes its stages", analyzer.java_class_name())
+                        });
+                    assert_eq!(
+                        owned,
+                        shared,
+                        "{} over {text:?}",
+                        analyzer.java_class_name()
+                    );
+                }
+            }
+        }
+    }
+
+    /// An EnglishAnalyzer with a stem-exclusion set keeps the shared stream:
+    /// its `SetKeywordMarkerFilter` has no owned stage.
+    #[test]
+    fn an_english_analyzer_with_stem_exclusions_has_no_owned_stages() {
+        let analyzer = EnglishAnalyzer::with_stem_exclusion_set(
+            EnglishAnalyzer::get_default_stop_set().clone(),
+            &rucene::analysis::stop_filter::make_stop_set(["running"], false),
+        );
+        assert!(owned_and_shared_tokens(&analyzer, "f", "running")
+            .unwrap()
+            .is_none());
     }
 }

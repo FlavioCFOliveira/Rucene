@@ -842,10 +842,8 @@ mod tests {
         let producer = EmptyDocValuesProducer;
         let field = FieldInfo::default();
         match producer.get_skipper(&field) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::UnsupportedOperation { .. },
-                ..
-            }) => {}
+            Err(ref __lerr)
+                if matches!(&__lerr.kind, LuceneErrorKind::UnsupportedOperation { .. }) => {}
             Err(other) => panic!("expected UnsupportedOperation, got {other:?}"),
             Ok(_) => panic!("expected UnsupportedOperation, got a skipper"),
         }
@@ -2289,7 +2287,7 @@ mod census_gap_wrong_field_info_tests {
             None,
         );
         let producer = MergedDocValuesProducer::new(&merged, &merge_state, None);
-        let message = |e: LuceneError| match e.kind {
+        let message = |e: LuceneError| match e.into_kind() {
             LuceneErrorKind::IllegalArgument { message, .. } => message,
             other => panic!("expected IllegalArgumentException, got {other:?}"),
         };

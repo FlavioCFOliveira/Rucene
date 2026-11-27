@@ -860,10 +860,11 @@ mod tests {
             None,
             no_output(),
         ) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => message,
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                message.clone()
+            }
             other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
         };
         assert_eq!(
@@ -918,10 +919,7 @@ mod tests {
             None,
             None,
         ) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalState { message, .. },
-                ..
-            }) => {
+            Err(ref __lerr) if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind => {
                 assert_eq!(message, "maxDoc was already set: this.maxDoc=3 vs maxDoc=3")
             }
             other => panic!("expected an IllegalState, got {:?}", other.map(|_| ())),
@@ -990,14 +988,15 @@ mod tests {
             Some(id_sort()),
             Arc::new(crate::util::NoOutputInfoStream),
         ) {
-            Err(LuceneError {
-                kind: LuceneErrorKind::IllegalArgument { message, .. },
-                ..
-            }) => assert_eq!(
-                message,
-                "index sort mismatch: merged segment has sort=<string: \"id\"> but \
+            Err(ref __lerr)
+                if let LuceneErrorKind::IllegalArgument { message, .. } = &__lerr.kind =>
+            {
+                assert_eq!(
+                    message,
+                    "index sort mismatch: merged segment has sort=<string: \"id\"> but \
                  to-be-merged segment has sort=null"
-            ),
+                )
+            }
             other => panic!("expected an IllegalArgument, got {:?}", other.map(|_| ())),
         }
     }
@@ -1061,14 +1060,10 @@ mod tests {
             for outcome in [compared, provided] {
                 match (outcome, &expected) {
                     (Ok(()), None) => {}
-                    (
-                        Err(LuceneError {
-                            kind: LuceneErrorKind::IllegalState { message, .. },
-                            ..
-                        }),
-                        Some(expected),
-                    ) => {
-                        assert_eq!(&message, expected)
+                    (Err(ref __lerr), Some(expected))
+                        if let LuceneErrorKind::IllegalState { message, .. } = &__lerr.kind =>
+                    {
+                        assert_eq!(message, expected)
                     }
                     (other, _) => panic!("{field}: {other:?}"),
                 }

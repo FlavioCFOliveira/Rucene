@@ -323,12 +323,13 @@ fn outcome(f: impl FnOnce() -> Result<()>) -> (String, String) {
     };
     match result {
         Ok(Ok(())) => ("none".to_string(), "-".to_string()),
-        Ok(Err(LuceneError {
-            kind: LuceneErrorKind::AssertionError(m),
-            ..
-        })) => (
+        Ok(Err(ref __lerr)) if let LuceneErrorKind::AssertionError(m) = &__lerr.kind => (
             "java.lang.AssertionError".to_string(),
-            if m.is_empty() { "null".to_string() } else { m },
+            if m.is_empty() {
+                "null".to_string()
+            } else {
+                m.clone()
+            },
         ),
         Ok(Err(e)) => java_error_of(&e),
         Err(payload) => {
@@ -512,10 +513,11 @@ fn misuses(nocfs: &Path, scratch: &Path) -> Vec<(String, (String, String))> {
                     thrown = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         terms.iterator().map(drop)
                     })) {
-                        Ok(Err(LuceneError {
-                            kind: LuceneErrorKind::AssertionError(m),
-                            ..
-                        })) => Some(m),
+                        Ok(Err(ref __lerr))
+                            if let LuceneErrorKind::AssertionError(m) = &__lerr.kind =>
+                        {
+                            Some(m.clone())
+                        }
                         Ok(Err(e)) => Some(e.to_string()),
                         Ok(Ok(())) => None,
                         Err(payload) => {
@@ -811,10 +813,7 @@ fn root_cause(e: &LuceneError) -> (String, String) {
         current = next;
     }
     match deepest_lucene {
-        LuceneError {
-            kind: LuceneErrorKind::Io(io),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::Io(io) = &__lerr.kind => (
             java_class_of(io).to_string(),
             java_message_of(io).unwrap_or_else(|| "null".to_string()),
         ),
@@ -1529,17 +1528,11 @@ fn java_root_cause(e: &LuceneError) -> (String, String) {
         current = next;
     }
     match deepest {
-        LuceneError {
-            kind: LuceneErrorKind::UnsupportedOperation { message: m, .. },
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::UnsupportedOperation { message: m, .. } = &__lerr.kind => (
             "java.lang.UnsupportedOperationException".to_string(),
             m.clone(),
         ),
-        LuceneError {
-            kind: LuceneErrorKind::AssertionError(m),
-            ..
-        } => (
+        __lerr if let LuceneErrorKind::AssertionError(m) = &__lerr.kind => (
             "java.lang.AssertionError".to_string(),
             if m.is_empty() {
                 "null".to_string()

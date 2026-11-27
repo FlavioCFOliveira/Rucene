@@ -1786,18 +1786,15 @@ mod tests {
         let bytes = out.into_inner();
         let error = SortField::read_type(&mut ByteArrayDataInput::new(&bytes)).unwrap_err();
         match &error {
-            LuceneError {
-                kind:
-                    LuceneErrorKind::IllegalArgument {
-                        message,
-                        cause: Some(cause),
-                    },
-                ..
-            } => {
+            __lerr
+                if let LuceneErrorKind::IllegalArgument {
+                    message,
+                    cause: Some(cause),
+                } = &__lerr.kind =>
+            {
                 assert_eq!(message, "Can't deserialize SortField - unknown type FOO");
                 assert!(
-                    matches!(&**cause, LuceneError { kind: LuceneErrorKind::IllegalArgument { message: m, .. }, .. }
-                        if m == "No enum constant org.apache.lucene.search.SortField.Type.FOO"),
+                    matches!(&cause.kind, LuceneErrorKind::IllegalArgument { message: m, .. } if m == "No enum constant org.apache.lucene.search.SortField.Type.FOO"),
                     "{cause:?}"
                 );
             }

@@ -193,6 +193,28 @@ impl TokenFilterFactory for SnowballPorterFilterFactory {
         Ok(Box::new(new_snowball_filter(input, program)?))
     }
 
+    /// `create(input)` as an owned stage, when no protected words put a
+    /// `SetKeywordMarkerFilter` below the `SnowballFilter`
+    /// (`SnowballPorterFilterFactory.java:90-104`); `None` otherwise.
+    fn owned_filter(&self) -> Option<Result<Box<dyn rucene::analysis::owned::OwnedTokenFilter>>> {
+        if self.protected_words.is_some() {
+            return None;
+        }
+        let Some(stem_class) = self.stem_class else {
+            return Some(Err(LuceneError::from(LuceneErrorKind::Unchecked {
+                class: "java.lang.RuntimeException",
+                message: Some(format!(
+                    "Error instantiating stemmer for language {}from class null",
+                    self.language
+                )),
+                cause: Some(Arc::new(LuceneError::null_pointer())),
+            })));
+        };
+        Some(Ok(Box::new(
+            crate::analysis::snowball::snowball_filter::OwnedSnowballFilter::new(stem_class()),
+        )))
+    }
+
     fn as_resource_loader_aware(&mut self) -> Option<&mut dyn ResourceLoaderAware> {
         Some(self)
     }
